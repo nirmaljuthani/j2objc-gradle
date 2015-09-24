@@ -26,6 +26,7 @@ import org.gradle.api.file.FileTree
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputFile
 import org.gradle.api.tasks.InputFiles
+import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.TaskAction
 
@@ -40,6 +41,10 @@ class TestTask extends DefaultTask {
     // *Test.java files and TestRunner binary
     @InputFile
     File testBinaryFile
+
+    // 'debug' or 'release'
+    @Input
+    String buildType
 
     @InputFiles
     FileTree getTestSrcFiles() {
@@ -56,11 +61,6 @@ class TestTask extends DefaultTask {
         return allFiles
     }
 
-    // Report of test failures
-    @OutputFile
-    File reportFile = project.file("${project.buildDir}/reports/${name}.out")
-
-    // j2objcConfig dependencies for UP-TO-DATE checks
     @Input
     List<String> getTestArgs() { return J2objcConfig.from(project).testArgs }
 
@@ -70,17 +70,46 @@ class TestTask extends DefaultTask {
     @Input
     int getTestMinExpectedTests() { return J2objcConfig.from(project).testMinExpectedTests }
 
+    // As tests can depend on resources
+    // TODO: switch to calling `inputs.dir(source set srcDirs)`
+    @InputFiles
+    FileTree getMainResourcesFiles() {
+        FileTree allResources = Utils.srcSet(project, 'main', 'resources')
+        allResources = allResources.plus(Utils.srcSet(project, 'test', 'resources'))
+        return allResources
+    }
+
+
+    // Output required for task up-to-date checks
+    @OutputFile
+    File reportFile = project.file("${project.buildDir}/reports/${name}.out")
+
+    @OutputDirectory
+    // Combines main/test resources and test executables
+    File getJ2objcTestDirFile() {
+        assert buildType in ['debug', 'release']
+        return new File(project.buildDir, "j2objcTest/$buildType")
+    }
+
 
     @TaskAction
     void test() {
-
-        String binary = testBinaryFile.path
-        logger.debug("Test Binary: $binary")
+        Utils.requireMacOSX('j2objcTest task')
 
         // list of test names: ['com.example.dir.ClassOneTest', 'com.example.dir.ClassTwoTest']
         // depends on "--prefixes dir/prefixes.properties" in translateArgs
         Properties packagePrefixes = Utils.packagePrefixes(project, translateArgs)
         List<String> testNames = getTestNames(project, getTestSrcFiles(), packagePrefixes)
+
+        // Test executable must be run from the same directory as the resources
+        Utils.syncResourcesTo(project, ['main', 'test'], getJ2objcTestDirFile())
+        Utils.projectCopy(project, {
+            from testBinaryFile
+            into getJ2objcTestDirFile()
+        })
+
+        File copiedTestBinary = new File(getJ2objcTestDirFile(), testBinaryFile.getName())
+        logger.debug("Test Binary: $copiedTestBinary")
 
         ByteArrayOutputStream stdout = new ByteArrayOutputStream()
         ByteArrayOutputStream stderr = new ByteArrayOutputStream()
@@ -91,7 +120,7 @@ class TestTask extends DefaultTask {
 
         try {
             Utils.projectExec(project, stdout, stderr, testCountRegex, {
-                executable binary
+                executable copiedTestBinary
                 args 'org.junit.runner.JUnitCore'
 
                 getTestArgs().each { String testArg ->
@@ -109,7 +138,8 @@ class TestTask extends DefaultTask {
         } catch (Exception exception) {
             String message =
                     "The j2objcTest task failed. Given that the java plugin 'test' task\n" +
-                    "completed successfully, this is an error specific to the j2objc build.\n" +
+                    "completed successfully, this is an error specific to the J2ObjC Gradle\n" +
+                    "Plugin build.\n" +
                     "\n" +
                     "1) Check BOTH 'Standard Output' and 'Error Output' above for problems.\n" +
                     "\n" +
@@ -160,7 +190,7 @@ class TestTask extends DefaultTask {
                 "    testMinExpectedTests ${testCount}\n" +
                 "}\n"
         if (getTestMinExpectedTests() == 0) {
-            logger.warn "Min Test check disabled due to: 'testMinExpectedTests 0'"
+            logger.warn("Min Test check disabled due to: 'testMinExpectedTests 0'")
         } else if (testCount < getTestMinExpectedTests()) {
             if (testCount == 0) {
                 message =
@@ -192,25 +222,23 @@ class TestTask extends DefaultTask {
         }
     }
 
-    // Generate Test Names
-    // Generate list of tests from the source java files
-    // e.g. src/test/java/com/example/dir/ClassTest.java => "com.example.dir.ClassTest"
+    // Generate list of test names from the source java files
     // depends on --prefixes dir/prefixes.properties in translateArgs
+    //   Before:  src/test/java/com/example/dir/SomeTest.java
+    //   After:   com.example.dir.SomeTest or PREFIXSomeTest
     static List<String> getTestNames(Project proj, FileCollection srcFiles, Properties packagePrefixes) {
 
         List<String> testNames = srcFiles.collect { File file ->
-            // Overall goal is to take the File path to the test name:
-            // src/test/java/com/example/dir/SomeTest.java => com.example.dir.SomeTest
-            // Comments show the value of the LHS variable after assignment
-
-            String testName = proj.relativePath(file)  // com.example.dir.SomeTest
-                    .replace('src/test/java/', '')
-                    .replace('/', '.')
-                    .replace('.java', '')
+            // Comments indicate the value at the end of that statement
+            String testName = proj.relativePath(file)  // src/test/java/com/example/dir/SomeTest.java
+                            .replace('\\', '/')  // Windows backslashes converted to forward slash
+                            .replace('src/test/java/', '')  // com/example/dir/SomeTest.java
+                            .replace('.java', '')  // com/example/dir/SomeTest
+                            .replace('/', '.')  // com.example.dir.SomeTest
 
             // Translate test name according to prefixes.properties
-            // Prefix Property: com.example.dir: Prefix
-            // Test Name: com.example.dir.SomeTest => PrefixSomeTest
+            // Prefix Property: com.example.dir: PREFIX
+            // Test Name: com.example.dir.SomeTest => PREFIXSomeTest
 
             // First match against the set of Java packages, excluding the filename
             Matcher matcher = (testName =~ /^(([^.]+\.)+)[^.]+$/)  // (com.example.dir.)SomeTest
@@ -219,10 +247,10 @@ class TestTask extends DefaultTask {
                 String namespaceChopped = namespace[0..-2]  // com.example.dir
                 if (packagePrefixes.containsKey(namespaceChopped)) {
                     String prefix = packagePrefixes.getProperty(namespaceChopped)
-                    testName = testName.replace(namespace, prefix)  // PrefixSomeTest
+                    testName = testName.replace(namespace, prefix)  // PREFIXSomeTest
                 }
             }
-            return testName  // com.example.dir.SomeTest or PrefixSomeTest
+            return testName  // com.example.dir.SomeTest or PREFIXSomeTest
         }
         return testNames
     }

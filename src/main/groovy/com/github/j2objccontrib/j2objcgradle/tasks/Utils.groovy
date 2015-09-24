@@ -34,6 +34,7 @@ import org.gradle.api.tasks.WorkResult
 import org.gradle.process.ExecResult
 import org.gradle.process.ExecSpec
 import org.gradle.process.internal.ExecException
+import org.gradle.util.GradleVersion
 
 import java.util.regex.Matcher
 
@@ -48,62 +49,197 @@ class Utils {
     // TODO: ideally bundle j2objc binaries with plugin jar and load at runtime with
     // TODO: ClassLoader.getResourceAsStream(), extract, chmod and then execute
 
+    // Prevent construction of this class, confines usage to static methods
+    private Utils() { }
+
+    static void checkMinGradleVersion(GradleVersion gradleVersion) {
+        final GradleVersion minGradleVersion = GradleVersion.version('2.4')
+        if (gradleVersion.compareTo(minGradleVersion) < 0) {
+            throw new InvalidUserDataException(
+                    "J2ObjC Gradle Plugin requires minimum Gradle version: $minGradleVersion")
+        }
+    }
+
+    private static String fakeOSName = ''
+
+    // This allows faking of is(Linux|Windows|MacOSX) methods but misses java.io.File separators
+    // One of the following four methods should be called in @Before method to isolate test state
+    @VisibleForTesting
+    static void setFakeOSLinux() {
+        fakeOSName = 'Linux'
+    }
+
+    @VisibleForTesting
+    static void setFakeOSMacOSX() {
+        fakeOSName = 'Mac OS X'
+    }
+
+    @VisibleForTesting
+    static void setFakeOSWindows() {
+        fakeOSName = 'Windows'
+    }
+
+    // Unset fake os, should be needed for @Before method
+    @VisibleForTesting
+    static void setFakeOSNone() {
+        fakeOSName = ''
+    }
+
+    @VisibleForTesting
+    static String getLowerCaseOSName(boolean ignoreFakeOSName) {
+
+        String osName = System.getProperty('os.name')
+        if (!ignoreFakeOSName) {
+            if (!fakeOSName.isEmpty()) {
+                osName = fakeOSName
+            }
+        }
+        osName = osName.toLowerCase()
+        return osName
+    }
+
+    static boolean isLinux() {
+        String osName = getLowerCaseOSName(false)
+        // http://stackoverflow.com/a/18417382/1509221
+        return osName.contains('nux')
+    }
+
+    static boolean isMacOSX() {
+        String osName = getLowerCaseOSName(false)
+        // http://stackoverflow.com/a/18417382/1509221
+        return osName.contains('mac') || osName.contains('darwin')
+    }
+
     static boolean isWindows() {
-        return System.getProperty('os.name').toLowerCase().contains('windows')
+        String osName = getLowerCaseOSName(false)
+        return osName.contains('windows')
+    }
+
+    static boolean isWindowsNoFake() {
+        String osName = getLowerCaseOSName(true)
+        return osName.contains('windows')
+    }
+
+    static void requireMacOSX(String taskName) {
+        if (!isMacOSX()) {
+            throw new InvalidUserDataException(
+                    "Mac OS X is required for $taskName. Use `translateOnlyMode` on Windows or Linux:\n" +
+                    'https://github.com/j2objc-contrib/j2objc-gradle/blob/master/FAQ.md#how-do-i-develop-on-windows-or-linux')
+        }
+    }
+
+    // Same as File.separator but can be faked using setFakeOSXXXX()
+    static String fileSeparator() {
+        if (isWindows()) {
+            return '\\'
+        } else {
+            return '/'
+        }
+    }
+
+    // Same as File.pathSeparator but can be faked using setFakeOSXXXX()
+    static String pathSeparator() {
+        if (isWindows()) {
+            return ';'
+        } else {
+            return ':'
+        }
     }
 
     static void throwIfNoJavaPlugin(Project proj) {
         if (!proj.plugins.hasPlugin('java')) {
             String message =
-                    "j2objc plugin didn't find the 'java' plugin in the '${proj.name}' project.\n" +
-                    "This is a requirement for using j2objc. Please see usage information at:\n" +
+                    "J2ObjC Gradle Plugin: missing 'java' plugin for '${proj.name}' project.\n" +
+                    "This is a requirement for using J2ObjC. Please see usage information at:\n" +
                     "https://github.com/j2objc-contrib/j2objc-gradle/#usage"
             throw new InvalidUserDataException(message)
         }
     }
 
+    // Add valid keys here
+    // Use camelCase and order alphabetically
+    private static final List<String> PROPERTIES_VALID_KEYS =
+            Collections.unmodifiableList(Arrays.asList(
+        'debug.enabled',
+        'enabledArchs',
+        'home',
+        'release.enabled',
+        'translateOnlyMode'
+    ))
+
+    private static final String PROPERTY_KEY_PREFIX = 'j2objc.'
+
+    /**
+     * Retrieves the local properties with highest precedence:
+     * 1.  local.properties value like j2objc.name1.name2 when present.
+     * 2.  environment variable like J2OBJC_NAME1_NAME2 when present.
+     * 3.  defaultValue.
+     */
     static String getLocalProperty(Project proj, String key, String defaultValue = null) {
+
+        // Check for requesting invalid key
+        if (!(key in PROPERTIES_VALID_KEYS)) {
+            throw new InvalidUserDataException(
+                    "Requesting invalid property: $key\n" +
+                    "Valid Keys: $PROPERTIES_VALID_KEYS")
+        }
         File localPropertiesFile = new File(proj.rootDir, 'local.properties')
-        String result = defaultValue
+        String result = null
         if (localPropertiesFile.exists()) {
             Properties localProperties = new Properties()
             localPropertiesFile.withInputStream {
                 localProperties.load it
             }
-            result = localProperties.getProperty('j2objc.' + key, defaultValue)
+
+            // Check valid key in local.properties for everything with PROPERTY_KEY_PREFIX
+            localProperties.keys().each { String propKey ->
+                if (propKey.startsWith(PROPERTY_KEY_PREFIX)) {
+                    String withoutPrefix =
+                            propKey.substring(PROPERTY_KEY_PREFIX.length(), propKey.length())
+                    if (!(withoutPrefix in PROPERTIES_VALID_KEYS)) {
+                        throw new InvalidUserDataException(
+                                "Invalid J2ObjC Gradle Plugin property: $propKey\n" +
+                                "From local.properties: $localPropertiesFile.absolutePath\n" +
+                                "Valid Keys: $PROPERTIES_VALID_KEYS")
+                    }
+                }
+            }
+
+            result = localProperties.getProperty(PROPERTY_KEY_PREFIX + key, null)
         }
-        return result
+        if (result == null) {
+            // debug.enabled becomes J2OBJC_DEBUG_ENABLED
+            String envName = 'J2OBJC_' + key.replace('.', '_').toUpperCase(Locale.ENGLISH)
+            // TODO: Unit tests.
+            result = System.getenv(envName)
+        }
+        return result == null ? defaultValue : result
     }
 
-    // MUST be used only in @Input getJ2objcHome() methods to ensure UP-TO-DATE checks are correct
+    // MUST be used only in @Input getJ2objcHome() methods to ensure up-to-date checks are correct
     // @Input getJ2objcHome() method can be used freely inside the task action
     static String j2objcHome(Project proj) {
-        String result = getLocalProperty(proj, 'home')
-        if (result == null) {
-            result = System.getenv('J2OBJC_HOME')
-        }
-        if (result == null) {
+        String j2objcHome = getLocalProperty(proj, 'home')
+        if (j2objcHome == null) {
             String message =
-                    "j2objc home not set, this should be configured either:\n" +
+                    "J2ObjC Home not set, this should be configured either:\n" +
                     "1) in a 'local.properties' file in the project root directory as:\n" +
-                    "   j2objc.home=/PATH/TO/J2OBJC/DISTRIBUTION\n" +
+                    "   j2objc.home=/LOCAL_J2OBJC_PATH\n" +
                     "2) as the J2OBJC_HOME system environment variable\n" +
                     "\n" +
                     "If both are configured the value in the properties file will be used.\n" +
                     "\n" +
-                    "It must be the path of the unzipped j2objc distribution. Download releases here:\n" +
+                    "It must be the path of the unzipped J2ObjC distribution. Download releases here:\n" +
                     "https://github.com/google/j2objc/releases"
             throw new InvalidUserDataException(message)
         }
-        if (!proj.file(result).exists()) {
-            String message = "j2objc directory not found, expected location: ${result}"
+        File j2objcHomeFile = new File(j2objcHome)
+        if (!j2objcHomeFile.exists()) {
+            String message = "J2OjcC Home directory not found, expected location: ${j2objcHome}"
             throw new InvalidUserDataException(message)
         }
-        // Trailing slashes cause problems with string concatenation logic.
-        if (result != null && result.endsWith('/')) {
-            result = result.substring(0, result.length() - 1)
-        }
-        return result
+        // File removes trailing slashes cause problems with string concatenation logic
+        return j2objcHomeFile.absolutePath
     }
 
     // Reads properties file and arguments from translateArgs (last argument takes precedence)
@@ -205,7 +341,17 @@ class Utils {
         files.each { File file ->
             paths += file.path
         }
-        return paths.join(':')
+        // OS specific separator, i.e. ":" on OS X and ";" on Windows
+        return paths.join(pathSeparator())
+    }
+
+    static String trimTrailingForwardSlash(String path) {
+        assert path != null
+        if (path.endsWith('/')) {
+            // Remove last character
+            return path[0..-2]
+        }
+        return path
     }
 
     // Convert regex to string for display, wrapping it with /.../
@@ -230,7 +376,9 @@ class Utils {
         Matcher stdMatcher = (stdout.toString() =~ regex)
         Matcher errMatcher = (stderr.toString() =~ regex)
         // Requires a capturing group in the regex
-        String assertFailMsg = "matchRegexOutputs must have '(...)' capture group, regex: '$regex'"
+        String assertFailMsg =
+                "matchRegexOutputs must have '(...)' capture group, regex: " +
+                escapeSlashyString(regex)
         assert stdMatcher.groupCount() >= 1, assertFailMsg
         assert errMatcher.groupCount() >= 1, assertFailMsg
 
@@ -244,13 +392,128 @@ class Utils {
         return null
     }
 
+    @VisibleForTesting
+    static String projectExecLog(
+            ExecSpec execSpec, ByteArrayOutputStream stdout, ByteArrayOutputStream stderr,
+            boolean execSucceeded, Exception exception) {
+        // Add command line and stderr to make the error message more useful
+        // Chain to the original ExecException for complete stack trace
+
+        String msg
+        // The command line can be long, so highlight more important details below
+        if (execSucceeded) {
+            msg = 'Command Line Succeeded:\n'
+        } else {
+            msg = 'Command Line Failed:\n'
+        }
+
+        msg += execSpec.getCommandLine().join(' ') + '\n'
+
+        // Working Directory appears to always be set
+        if (execSpec.getWorkingDir() != null) {
+            msg += 'Working Dir:\n'
+            msg += execSpec.getWorkingDir().absolutePath + '\n'
+        }
+
+        // Use 'Cause' instead of 'Caused by' to help distinguish from exceptions
+        if (exception != null) {
+            msg += 'Cause:\n'
+            msg += exception.toString() + '\n'
+        }
+
+        // Stdout and stderr
+        msg += stdOutAndErrToLogString(stdout, stderr)
+        return msg
+    }
+
+    static String stdOutAndErrToLogString(ByteArrayOutputStream stdout, ByteArrayOutputStream stderr) {
+        return 'Standard Output:\n' +
+                stdout.toString() + '\n' +
+                'Error Output:\n' +
+                stderr.toString()
+    }
+
+    static boolean isProjectExecNonZeroExit(Exception exception) {
+        return (exception instanceof InvalidUserDataException) &&
+               // TODO: improve indentification of non-zero exits?
+               (exception?.getCause() instanceof ExecException)
+    }
+
+    // Sync main and or test resources, deleting destination directory and then recreating it
+    // TODO: make the sync more efficient, e.g. Gradle Sync task or rsync
+    static WorkResult syncResourcesTo(Project proj, List<String> sourceSetNames, File destDir) {
+        projectDelete(proj, destDir)
+        projectMkDir(proj, destDir)
+        return projectCopy(proj, {
+            sourceSetNames.each { String sourceSetName ->
+                assert sourceSetName in ['main', 'test']
+                srcSet(proj, sourceSetName, 'resources').srcDirs.each {
+                    from it
+                }
+            }
+            into destDir
+        })
+    }
+
     /**
-     * Executes command line and returns result.
+     * Copy content to directory by calling project.copy(closure)
+     *
+     * Must be called instead of project.copy(...) to allow mocking of project calls in testing.
+     *
+     * @param proj Calls proj.copy {...} method
+     * @param closure CopySpec closure
+     */
+    // See projectExec for explanation of the code
+    @CompileStatic(TypeCheckingMode.SKIP)
+    static WorkResult projectCopy(Project proj,
+                                  @ClosureParams(value = SimpleType.class, options = "org.gradle.api.file.CopySpec")
+                                  @DelegatesTo(CopySpec)
+                                          Closure closure) {
+        proj.copy {
+            (delegate as CopySpec).with closure
+        }
+    }
+
+    /**
+     * Delete a directory by calling project.delete(...)
+     *
+     * Must be called instead of project.delete(...) to allow mocking of project calls in testing.
+     *
+     * @param proj Calls proj.delete(...) method
+     * @param paths Variable length list of paths to be deleted, can be String or File
+     */
+    // See projectExec for explanation of the code
+    @CompileStatic(TypeCheckingMode.SKIP)
+    static boolean projectDelete(Project proj, Object... paths) {
+        return proj.delete(paths)
+    }
+
+    /**
+     * Delete a directory and recreate it using project.delete(...) and project.mkdir(...)
+     *
+     * Must be called instead of project.delete(...) to allow mocking of project calls in testing.
+     * May fail in the case where the parent directory doesn't exist. This is because it uses
+     * Project.mkdir(...) instead of File.mkdirs(...). Note that if the parameter is an
+     * @OutputDirectory, then the directory is automatically created before the task runs.
+     *
+     * @param proj Calls proj.delete(...) method and then project.mkdir(...)
+     * @param paths Variable length list of paths to be deleted, can be String or File
+     */
+    // See projectExec for explanation of the code
+    @CompileStatic(TypeCheckingMode.SKIP)
+    static boolean projectClearDir(Project proj, File path) {
+        proj.delete(path)
+        proj.mkdir(path)
+    }
+
+    /**
+     * Executes command line and returns result by calling project.exec(...)
      *
      * Throws exception if command fails or non-null regex doesn't match stdout or stderr.
      * The exceptions have detailed information on command line, stdout, stderr and failure cause.
+     * Must be called instead of project.exec(...) to allow mocking of project calls in testing.
      *
-     * @param proj Runs proj.exec {...} method
+     * @param proj Calls proj.exec {...} method
      * @param stdout To capture standard output
      * @param stderr To capture standard output
      * @param matchRegexOutputsRequired Throws exception if stdout/stderr don't match regex.
@@ -299,74 +562,39 @@ class Utils {
             }
 
         } catch (Exception exception) {
-
             // ExecException is most common, which indicates "non-zero exit"
-            // Add command line and stderr to make the error message more useful
-            // Chain to the original ExecException for complete stack trace
-            String exceptionMsg = ''
-            if (execSucceeded) {
-                exceptionMsg += 'Command Line Succeeded (failure cause listed below):\n'
-            } else {
-                exceptionMsg += 'Command Line Failed:\n'
-            }
-            exceptionMsg +=
-                    // The command line can be long, so highlight more important details below
-                    execSpec.getCommandLine().join(' ') + '\n' +
-                    // Use 'Cause' instead of 'Caused by' to help debugging these error messages
-                    'Cause:\n' +
-                    exception.toString() + '\n' +
-                    stdOutAndErrToLogString(stdout, stderr)
-
+            String exceptionMsg = projectExecLog(execSpec, stdout, stderr, execSucceeded, exception)
             throw new InvalidUserDataException(exceptionMsg, exception)
         }
 
-        logDebugExecSpecOutput(stdout, stderr, execSpec)
+        log.debug(projectExecLog(execSpec, stdout, stderr, execSucceeded, null))
 
         return execResult
     }
 
-    @VisibleForTesting
-    static void logDebugExecSpecOutput(
-            ByteArrayOutputStream stdout, ByteArrayOutputStream stderr, ExecSpec execSpec) {
-
-        if (execSpec == null) {
-            log.debug('execSpec is null')
-            return
-        }
-
-        log.debug('Command Line:\n' + execSpec.getCommandLine().join(' '))
-
-        String stdoutStr = stdout.toString()
-        String stderrStr = stderr.toString()
-        if (!stdoutStr.empty) {
-            log.debug(stdoutStr)
-        }
-        if (!stderrStr.empty) {
-            log.debug(stderrStr)
-        }
-    }
-
-    static String stdOutAndErrToLogString(ByteArrayOutputStream stdout, ByteArrayOutputStream stderr) {
-        return 'Standard Output:\n' +
-                stdout.toString() + '\n' +
-                'Error Output:\n' +
-                stderr.toString()
-    }
-
-    static boolean isProjectExecNonZeroExit(Exception exception) {
-        return (exception instanceof InvalidUserDataException) &&
-               // TODO: improve indentification of non-zero exits?
-               (exception?.getCause() instanceof ExecException)
-    }
-
-    // See projectExec for explanation of the annotations.
+    /**
+     * Delete a directory by calling project.mkdir(...)
+     *
+     * Must be called instead of project.mkdir(...) to allow mocking of project calls in testing.
+     *
+     * @param proj Calls proj.mkdir(...) method
+     * @param paths Variable length list of paths to be deleted, can be String or File
+     */
+    // See projectExec for explanation of the code
     @CompileStatic(TypeCheckingMode.SKIP)
-    static WorkResult projectCopy(Project proj,
-                                  @ClosureParams(value = SimpleType.class, options = "org.gradle.api.file.CopySpec")
-                                  @DelegatesTo(CopySpec)
-                                          Closure closure) {
-        proj.copy {
-            (delegate as CopySpec).with closure
+    static boolean projectMkDir(Project proj, Object path) {
+        return proj.mkdir(path)
+    }
+
+    static FileCollection mapSourceFiles(Project proj, FileCollection files,
+                                         Map<String, String> sourceMapping) {
+        for (String before : sourceMapping.keySet()) {
+            if (files.contains(proj.file(before))) {
+                // Replace the before file with the after file.
+                files = files.minus(proj.files(before)).plus(
+                        proj.files(sourceMapping.get(before)))
+            }
         }
+        return files
     }
 }

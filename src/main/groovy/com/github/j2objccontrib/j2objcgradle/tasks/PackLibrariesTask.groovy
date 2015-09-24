@@ -19,6 +19,7 @@ package com.github.j2objccontrib.j2objcgradle.tasks
 import com.github.j2objccontrib.j2objcgradle.J2objcConfig
 import groovy.transform.CompileStatic
 import org.gradle.api.DefaultTask
+import org.gradle.api.InvalidUserDataException
 import org.gradle.api.file.ConfigurableFileCollection
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputFiles
@@ -34,45 +35,46 @@ class PackLibrariesTask extends DefaultTask {
 
     // Generated ObjC binaries
     @InputFiles
-    ConfigurableFileCollection getInputLibraries() {
+    ConfigurableFileCollection getLibrariesFiles() {
         String staticLibraryPath = "${project.buildDir}/binaries/${project.name}-j2objcStaticLibrary"
-        return project.files(getSupportedArchs().collect { String arch ->
+        return project.files(getActiveArchs().collect { String arch ->
             "$staticLibraryPath/$arch$buildType/lib${project.name}-j2objc.a"
         })
     }
 
-    @OutputDirectory
-    File getOutputLibDir() {
-        return project.file("${project.buildDir}/packedBinaries/${project.name}-j2objcStaticLibrary/ios$buildType")
-    }
-
-    // Debug or Release for each library
+    // Debug or Release
     @Input
     String buildType
 
     @Input
-    List<String> getSupportedArchs() { return J2objcConfig.from(project).supportedArchs }
+    List<String> getActiveArchs() { return J2objcConfig.from(project).activeArchs }
+
+
+    @OutputDirectory
+    File getOutputLibDirFile() {
+        return project.file("${project.buildDir}/packedBinaries/${project.name}-j2objcStaticLibrary/ios$buildType")
+    }
+
 
     @TaskAction
-    void lipoLibraries() {
-        if (getOutputLibDir().exists()) {
-            // Clear it out.
-            getOutputLibDir().deleteDir()
-            getOutputLibDir().mkdirs()
-        }
+    void packLibraries() {
+        Utils.requireMacOSX('j2objcPackLibraries task')
+
+        Utils.projectDelete(project, getOutputLibDirFile())
+        getOutputLibDirFile().mkdirs()
 
         ByteArrayOutputStream stdout = new ByteArrayOutputStream()
         ByteArrayOutputStream stderr = new ByteArrayOutputStream()
-        logger.debug("PackLibrariesTask - projectExec - $name:")
 
         try {
             Utils.projectExec(project, stdout, stderr, null, {
                 executable 'xcrun'
-
                 args 'lipo'
-                args '-create', '-output', "${outputLibDir}/lib${project.name}-j2objc.a"
 
-                getInputLibraries().each { File libFile ->
+                args '-create'
+                args '-output', project.file("${outputLibDirFile}/lib${project.name}-j2objc.a").absolutePath
+
+                getLibrariesFiles().each { File libFile ->
                     args libFile.absolutePath
                 }
 

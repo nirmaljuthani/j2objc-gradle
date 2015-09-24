@@ -21,6 +21,7 @@ import org.gradle.api.InvalidUserDataException
 import org.gradle.api.Project
 import org.gradle.api.file.FileCollection
 import org.gradle.testfixtures.ProjectBuilder
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.ExpectedException
@@ -38,6 +39,12 @@ class TestTaskTest {
 
     @Rule
     public ExpectedException expectedException = ExpectedException.none();
+
+    @Before
+    void setUp() {
+        // Mac OS X is the only OS that can run this task
+        Utils.setFakeOSMacOSX()
+    }
 
     @Test
     void testGetTestNames_Simple() {
@@ -97,8 +104,20 @@ class TestTaskTest {
         ))
 
         j2objcTest = (TestTask) proj.tasks.create(name: 'j2objcTest', type: TestTask) {
-            testBinaryFile = proj.file("${proj.buildDir}/testJ2objc")
+            testBinaryFile = proj.file(proj.file('build/binaries/testJ2objcExecutable/debug/testJ2objc'))
+            buildType = 'debug'
         }
+    }
+
+    @Test
+    void testTaskAction_Windows() {
+        Utils.setFakeOSWindows()
+        setupTask()
+
+        expectedException.expect(InvalidUserDataException.class)
+        expectedException.expectMessage('Mac OS X is required for j2objcTest task')
+
+        j2objcTest.test()
     }
 
     @Test
@@ -108,21 +127,22 @@ class TestTaskTest {
 
         MockProjectExec mockProjectExec = new MockProjectExec(proj, j2objcHome)
 
-        expectedException.expect(InvalidUserDataException.class)
-        // Error:
-        expectedException.expectMessage('Unit tests are strongly encouraged with J2ObjC')
-        // Workaround:
-        expectedException.expectMessage('testMinExpectedTests 0')
-
+        demandCopyForJ2objcTest(mockProjectExec)
         mockProjectExec.demandExecAndReturn(
                 null,
                 [
-                        "${proj.buildDir}/testJ2objc",
+                        proj.file('build/j2objcTest/debug/testJ2objc').absolutePath,
                         "org.junit.runner.JUnitCore",
                 ],
                 'OK (0 test)',  // NOTE: 'test' is singular for stdout
                 '',  // stderr
                 null)
+
+        expectedException.expect(InvalidUserDataException.class)
+        // Error:
+        expectedException.expectMessage('Unit tests are strongly encouraged with J2ObjC')
+        // Workaround:
+        expectedException.expectMessage('testMinExpectedTests 0')
 
         j2objcTest.test()
     }
@@ -134,10 +154,11 @@ class TestTaskTest {
         MockProjectExec mockProjectExec = new MockProjectExec(proj, j2objcHome)
         j2objcConfig.testMinExpectedTests = 0
 
+        demandCopyForJ2objcTest(mockProjectExec)
         mockProjectExec.demandExecAndReturn(
                 null,
                 [
-                        "${proj.buildDir}/testJ2objc",
+                        proj.file('build/j2objcTest/debug/testJ2objc').absolutePath,
                         "org.junit.runner.JUnitCore",
                 ],
                 'OK (0 test)',  // NOTE: 'test' is singular for stdout
@@ -154,10 +175,11 @@ class TestTaskTest {
         setupTask()
 
         MockProjectExec mockProjectExec = new MockProjectExec(proj, j2objcHome)
+        demandCopyForJ2objcTest(mockProjectExec)
         mockProjectExec.demandExecAndReturn(
                 null,
                 [
-                        "${proj.buildDir}/testJ2objc",
+                        proj.file('build/j2objcTest/debug/testJ2objc').absolutePath,
                         "org.junit.runner.JUnitCore",
                 ],
                 'OK (1 test)',  // NOTE: 'test' is singular for stdout
@@ -174,10 +196,11 @@ class TestTaskTest {
         setupTask()
 
         MockProjectExec mockProjectExec = new MockProjectExec(proj, j2objcHome)
+        demandCopyForJ2objcTest(mockProjectExec)
         mockProjectExec.demandExecAndReturn(
                 null,
                 [
-                        "${proj.buildDir}/testJ2objc",
+                        proj.file('build/j2objcTest/debug/testJ2objc').absolutePath,
                         "org.junit.runner.JUnitCore",
                 ],
                 'IGNORE\nOK (2 tests)\nIGNORE',  // stdout
@@ -194,10 +217,11 @@ class TestTaskTest {
         setupTask()
 
         MockProjectExec mockProjectExec = new MockProjectExec(proj, j2objcHome)
+        demandCopyForJ2objcTest(mockProjectExec)
         mockProjectExec.demandExecAndReturn(
                 null,
                 [
-                        "${proj.buildDir}/testJ2objc",
+                        proj.file('build/j2objcTest/debug/testJ2objc').absolutePath,
                         "org.junit.runner.JUnitCore",
                 ],
                 'OK (2 testXXXX)',  // NOTE: invalid stdout fails matchRegexOutputs
@@ -207,6 +231,22 @@ class TestTaskTest {
         j2objcTest.test()
 
         mockProjectExec.verify()
+    }
+
+    private void demandCopyForJ2objcTest(MockProjectExec mockProjectExec) {
+        // Delete test directory
+        mockProjectExec.demandDeleteAndReturn(
+                proj.file('build/j2objcTest/debug').absolutePath)
+        // Copy main resources, test resources and test binary to test directory
+        mockProjectExec.demandMkDirAndReturn(
+                proj.file('build/j2objcTest/debug').absolutePath)
+        mockProjectExec.demandCopyAndReturn(
+                proj.file('build/j2objcTest/debug').absolutePath,
+                proj.file('src/main/resources').absolutePath,
+                proj.file('src/test/resources').absolutePath)
+        mockProjectExec.demandCopyAndReturn(
+                proj.file('build/j2objcTest/debug').absolutePath,
+                proj.file('build/binaries/testJ2objcExecutable/debug/testJ2objc').absolutePath)
     }
 
     // TODO: test_Simple() - with some real unit tests

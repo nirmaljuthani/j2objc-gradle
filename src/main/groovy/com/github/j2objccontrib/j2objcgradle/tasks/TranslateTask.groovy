@@ -51,8 +51,10 @@ class TranslateTask extends DefaultTask {
             allFiles = allFiles.matching(J2objcConfig.from(project).translatePattern)
         }
         FileCollection ret = allFiles
+        ret = Utils.mapSourceFiles(project, ret, getTranslateSourceMapping())
+
         if (additionalSrcFiles != null) {
-            ret = allFiles.plus(additionalSrcFiles)
+            ret = ret.plus(additionalSrcFiles)
         }
         return ret
     }
@@ -69,11 +71,18 @@ class TranslateTask extends DefaultTask {
         return allFiles
     }
 
-    // Generated ObjC files
-    @OutputDirectory
-    File srcGenDir
+    // Property is never used, however it is an input value as
+    // the contents of the prefixes, including a prefix file, affect all translation
+    // output.  We don't care about the prefix file (if any) per se, but we care about
+    // the final set of prefixes.
+    // NOTE: As long as all other tasks have the output of TranslateTask as its own inputs,
+    // they do not also need to have the packagePrefixes as a direct input in order to
+    // have correct up-to-date checks.
+    @SuppressWarnings("GroovyUnusedDeclaration")
+    @Input Properties getPackagePrefixes() {
+        return Utils.packagePrefixes(project, translateArgs)
+    }
 
-    // j2objcConfig dependencies for UP-TO-DATE checks
     @Input
     String getJ2objcHome() { return Utils.j2objcHome(project) }
 
@@ -93,7 +102,15 @@ class TranslateTask extends DefaultTask {
     List<String> getTranslateJ2objcLibs() { return J2objcConfig.from(project).translateJ2objcLibs }
 
     @Input
+    Map<String, String> getTranslateSourceMapping() { return J2objcConfig.from(project).translateSourceMapping }
+
+    @Input
     boolean getFilenameCollisionCheck() { return J2objcConfig.from(project).filenameCollisionCheck }
+
+
+    // Generated ObjC files
+    @OutputDirectory
+    File srcGenDir
 
 
     @TaskAction
@@ -113,10 +130,7 @@ class TranslateTask extends DefaultTask {
             // if the user requests it with the UNSAFE_incrementalBuildClosure argument.
             // TODO: One correct way to incrementally compile with --build-closure would be to use
             // allInputFiles someway, but this will require some research.
-            if (srcGenDir.exists()) {
-                srcGenDir.deleteDir()
-                srcGenDir.mkdirs()
-            }
+            Utils.projectClearDir(project, srcGenDir)
             srcFilesChanged = originalSrcFiles
         } else {
             boolean nonSourceFileChanged = false
@@ -194,10 +208,7 @@ class TranslateTask extends DefaultTask {
                 // A change outside of the source set directories has occurred, so an incremental build isn't possible.
                 // The most common such change is in the JAR for a dependent library, for example if Java project
                 // that this project depends on had its source changed and was recompiled.
-                if (srcGenDir.exists()) {
-                    srcGenDir.deleteDir()
-                    srcGenDir.mkdirs()
-                }
+                Utils.projectClearDir(project, srcGenDir)
                 srcFilesChanged = originalSrcFiles
             }
         }
@@ -228,7 +239,8 @@ class TranslateTask extends DefaultTask {
                 project.files(Utils.j2objcLibs(getJ2objcHome(), getTranslateJ2objcLibs()))
         ])
         // TODO: comment explaining ${project.buildDir}/classes
-        String classpathArg = Utils.joinedPathArg(classpathFiles) + ":${project.buildDir}/classes"
+        String classpathArg = Utils.joinedPathArg(classpathFiles) +
+                              Utils.pathSeparator() + "${project.buildDir}/classes"
 
         ByteArrayOutputStream stdout = new ByteArrayOutputStream()
         ByteArrayOutputStream stderr = new ByteArrayOutputStream()

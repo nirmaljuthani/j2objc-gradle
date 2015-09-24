@@ -16,9 +16,34 @@
 
 For plugin contributors, you should build the plugin from this repository's root:
 
-    $ ./gradlew build
+```sh
+$ ./gradlew build
+```
 
 This will create a .jar containing the plugin at projectDir/build/libs/j2objc-gradle-X.Y.Z-alpha.jar
+
+#### System tests
+
+On OS X we have system tests under the `systemTests` directory.  Each test directory
+has one root Gradle project (and zero or more subprojects), some or all of which apply the
+`j2objc-gradle` plugin.  Locally you can run them as follows:
+
+```sh
+# Once per git repository and/or new release of j2objc, run prep.
+pushd systemTests && ./prep.sh && popd
+# This downloads j2objc and prepares the environment.
+
+# Every time you want to run the tests:
+./gradlew build && pushd systemTests && ./run-all.sh && popd
+# Normal Gradle build results will be displayed for each test project.
+```
+
+These system tests are also run as part of OS X continuous integration builds on Travis.
+You are not required to run the system tests locally before creating a PR (they can take
+time and processing power), however if the tests fail on Travis you will need to update
+the PR until they pass.
+
+#### Testing on your own Gradle project
 
 In order to test your modification to the plugin using your own project, you need to modify the
 project that uses the plugin:
@@ -27,20 +52,22 @@ project that uses the plugin:
 1. Add the `buildscript` and `apply plugin` lines then update X.Y.Z based on "version = 'X.Y.Z-alpha'"
 in j2objc-gradle/build.gradle
 
-    // File: shared/build.gradle
+```gradle
+// File: shared/build.gradle
 
-    //plugins {
-    //    id 'java'
-    //    id 'com.github.j2objccontrib.j2objcgradle' version 'X.Y.Z-alpha'
-    //}
+//plugins {
+//    id 'java'
+//    id 'com.github.j2objccontrib.j2objcgradle' version 'X.Y.Z-alpha'
+//}
 
-    buildscript {
-        dependencies {
-            classpath files('/LOCAL_J2OBJC_GRADLE/j2objc-gradle/build/libs/j2objc-gradle-X.Y.Z-alpha.jar')
-        }
+buildscript {
+    dependencies {
+        classpath files('/LOCAL_J2OBJC_GRADLE/j2objc-gradle/build/libs/j2objc-gradle-X.Y.Z-alpha.jar')
     }
-    apply plugin: 'java'
-    apply plugin: 'com.github.j2objccontrib.j2objcgradle'
+}
+apply plugin: 'java'
+apply plugin: 'com.github.j2objccontrib.j2objcgradle'
+```
 
 Note that when rapidly developing and testing changes to the plugin by building your own project,
 avoid using the Gradle daemon as issues sometimes arise with the daemon using an old version
@@ -79,13 +106,13 @@ a customizations that aren't explicit in those guides.
 Further Customizations:
 
 * Function calls should use parentheses:
-```
+```groovy
 logging.captureStandardOutput(LogLevel.INFO)  // CORRECT
 logging.captureStandardOutput LogLevel.INFO   // WRONG
 ```
 
 * Configure calls do not use parentheses:
-```
+```groovy
 project.exec {
     executable 'j2objc'              // CORRECT
     args '-sourcepath', sourcepath   // CORRECT
@@ -96,7 +123,7 @@ project.exec {
 ```
 
 * Explicit Types instead of 'def':
-```
+```groovy
 String message = 'a message'  // CORRECT
 def message = 'a message'     // WRONG
 
@@ -106,7 +133,7 @@ translateArgs.each { arg ->         // WRONG
 ```
 
 * GString curly braces only for methods or object members:
-```
+```groovy
 String message = "the count is $count"           // CORRECT
 String message = "the count is ${object.count}"  // CORRECT
 String message = "the count is ${method()}"      // CORRECT
@@ -117,17 +144,18 @@ String message = "the count is $object.count"    // incorrect as it only prints 
 ```
 
 * Single quotes for non-GString, i.e. no string interpolation:
-```
+```groovy
 String message = 'the count is negative'  // CORRECT
 String message = "the count is negative"  // WRONG - only needed for $var interpolation
 ```
 
 * Regexes should be written and displayed as
-[http://docs.groovy-lang.org/latest/html/documentation/#_slashy_string](Slashy Strings):
-```
-String regex = /dot-star:.*,forward-slash:\/,newline:\n/
+[Slashy Strings](http://docs.groovy-lang.org/latest/html/documentation/#_slashy_string):
+```groovy
+String regex = /dot-star:.*, forward-slash:\/, newline:\n/
 logger.debug('Regex is: ' + Utils.escapedSlashyString(regex))
-// Debug log: '/dot-star:.*,forward-slash:\/,newline:\n/'
+
+// Debug log: '/dot-star:.*, forward-slash:\/, newline:\n/'
 ```
 
 
@@ -136,10 +164,125 @@ Unit tests must be written for all new code and major changes. Please follow the
 of existing tests.
 
 Running `build` also runs all the unit tests:
-```
+```sh
 ./gradlew build
 ```
 
+### Cross Platform Testing
+The plugin is designed to work on Mac OS X but also has limited support on Windows and Linux.
+The unit tests are designed to run across all platforms. This minimizes the chance that a
+developer working on one platform can break the build on another platform.
+
+#### Separators
+All the tests should be written using forward slashes for paths and `:` as the path separator
+(the standard for Linux and Mac OS X). MockProjectExec and other methods will automatically
+convert `\` to `/` and ':' to ';' on **on Windows only**.
+
+Separators are the main issue working across platforms. For the "file separator",
+`java.io.File.separator` separates path components in a directory hierarchy. This is `/` on
+Linux and Mac OS X and `\` on Windows. For the "path separator", `java.io.File.pathSeparator`
+separates paths on the command line. This is `:` on Linux and Mac OS X and `;` on Windows.
+
+
+#### Absolute Paths
+Absolute path detection is usually done by checking if it `startswith('/')`. For Windows,
+an absolute path has to start with the volume, e.g. `C:\`. When passing absolute paths
+to `proj.file(...)`, it must be prefixed with `C:` (the only volume used in testing).
+That should be done by using `TestingUtils.windowsNoFakeAbsolutePath(...)`. The following
+is a simple example that tests the OS specific behaviour of `proj.file(...)`:
+
+```groovy
+@Test
+public void testProjFile() {
+    String absolutePath = TestingUtils.windowsNoFakeAbsolutePath('/ABSOLUTE_PATH')
+    String actual = proj.file(absolutePath).absolutePath
+    // proj.file on Windows will convert '/' to '\', so convert back again
+    assert absolutePath == TestingUtils.windowsToForwardSlash(actual)
+}
+```
+
+#### Command Lines
+Windows doesn't support `echo hello` directly, instead you must run `cmd /C echo hello`.
+The `demandExecAndReturn(...)` methods allow you to supply a substitute set of arguments
+to replace the initial executable. For example the following will typically test for the
+execution of the command: `echo hello`. On Windows however, it will replace the first
+element with the second array, testing for the command `cmd /C echo hello`.
+
+```groovy
+mockProjectExec.demandExecAndReturn(
+        ['echo', 'hello'],
+        // windows substitute args
+        ['cmd', '/C', 'echo'])
+```
+
+#### Fake OS
+To get better coverage for a particular OS, without needing to run the unit-tests
+on that OS, it is possible to use the `setFakeOSXXXX()` methods. This has limited
+functionality and won't replace the native separators as used by java.io.File.
+When this is used, the `@Before` test method should always use the reset `setFakeOSNone()`
+to make the unit tests more hermetic. Within the particular test, use
+`Utils.setFakeOSWindows()` or similar for Linux or Mac OS X.
+
+In order for the test to pass, the main code under test must use `Utils.fileSeparator()`
+and `Utils.pathSeparator()`. These methods will respect the setFakeOSXXXX methods
+and return the separators for the faked OS. In the example below, the `testMethod_native`
+test uses the native platform on which the test is run, so it will act differently across
+multiple platforms. The `testMethod_windows` fakes the Windows OS. As long as the method
+under test uses `Utils.fileSeparator()`, the test will run the Windows code across all
+platforms.
+
+```groovy
+// File: Mine.groovy
+
+// Method can be used on both platforms
+public static void method() {
+    String executableIn = 'echo'
+    List<String> argsIn = ['hello']
+    // This conditional check if the fake OS has been set
+    if (Utils.isWindows()) {
+        executableIn = 'cmd'
+        argsIn = ['/C', 'echo', 'hello']
+    }
+    Utils.projectExec(project, null, null, null, {
+                executable executableIn
+                args argsIn
+                setStandardOutput null
+                setErrorOutput null
+            })
+}
+
+
+// File: MineTest.groovy
+
+// Default to native OS except for most tests
+@Before
+void setUp() {
+    Utils.setFakeOSNone()
+}
+
+// Uses native platform (most tests should be like this)
+@Test
+public void testMethod_native() {
+    mockProjectExec.demandExecAndReturn(
+            // Linux / Mac OS X uses only these arguments
+            ['echo', 'hello'],
+            // Windows will substitute these arguments
+            ['cmd', '/C', 'echo'])
+    Mine.method()
+}
+
+// Forces Windows platform test
+@Test
+public void testMethod_windows() {
+    Utils.setFakeOSWindows()
+    mockProjectExec.demandExecAndReturn(
+            // Making the test invalid on Linux / Mac OS X ensures that setFakeOSWindows works
+            ['INVALID-MUST-BE-SUBSTITUTED', 'hello'],
+            // All platforms will substitute these arguments due to the fake OS
+            ['cmd', '/C', 'echo'])
+    Mine.method()
+}
+```
 
 ### Preparing your pull request for submission
 Say you have a pull request ready for submission into the main repository - it has
@@ -161,7 +304,7 @@ branch is called 'patch-1' and that your pull request is number 46.
 
 
 ### Preparation
-```
+```sh
 # have a clean working directory and index
 # from the tip of your patch-1 branch: first save away your work
 git branch backup46
@@ -182,7 +325,7 @@ https://help.github.com/articles/configuring-a-remote-for-a-fork/,
 then do https://help.github.com/articles/syncing-a-fork/.
 Your local master should now be equal to upstream/master.
 Push your local master to your origin remote:
-```
+```sh
 # While in your local master branch
 git push
 ```
@@ -201,7 +344,7 @@ The following steps will:
 2. Allow you to merge those change in to yours.
 3. Allow you to squash all your commits into a single well-described commit.
 
-```
+```sh
 git checkout patch-1
 # condense this down to one commit to preserve proper project history
 git rebase -i master
@@ -221,6 +364,7 @@ https://git-scm.com/book/en/v2/Git-Branching-Basic-Branching-and-Merging
 
 
 ### Publishing and versioning
+
 These instructions are only for plugin maintainers; if you are just working
 on issues or pull requests, you can ignore this section.
 
@@ -230,20 +374,74 @@ published versions on plugins.gradle.org.  All branches and tags are on the
 `j2objc-contrib/j2objc-gradle` repository, not any forks.  The steps are:
 
 1.  Determine the version number.  Use https://semver.org to guide which
-slot in the version number should be bumped.  We'll call this `vX.Y.Z`.
-2.  From `master`, create a branch `release_vX.Y.Z` and check it out.
-3.  Optional: If any critical bugfixes are deemed neccessary, merge those
-commits into this release branch.
-4.  As a separate commit, bump the version number in `build.gradle`. 
-File a PR, and merge that PR into the release branch.
-5.  Tag the merge commit where that PR is merged into `release_vX.Y.Z` as `vX.Y.Z` and push that
-tag to the repository.  It is important that the commit where the
-merge occurred into the release branch is tagged - not the commit that bumped the version number, but
-also not the commit that merges the release branch into master (see below).
+slot in the version number should be bumped.  We'll call this `vX.Y.Z`.  Note that
+this does not have to be the `-SNAPSHOT` version in build.gradle - that number
+was auto-incremented after the last release and may not reflect the extent
+of API changes which, per semantic versioning, whether to increment major, minor,
+or patch numbers.
+2.  As a separate commit, update the version number in `build.gradle`, removing the
+`-SNAPSHOT` suffix if any, and add a brief section at the top of
+[CHANGELOG.md](CHANGELOG.md) indicating key functionality and quality improvements.
+File a PR, review and merge as normal.
+3. Get the commit SHA after the PR is merged from the
+[commit history](https://github.com/j2objc-contrib/j2objc-gradle/commits/master)
+(`cfdc1aa` used in example below).
+4. Verify that the specific commit SHA build Successful on all platforms. You may need
+to look in to the build history to confirm the specific SHA.
+5. Tag the merge commit where that PR is merged into master as `vX.Y.Z` and push
+that tag to the repository. Since you are working directly off master, you must manually
+verify that no additional commits/PRs have been merged that you don't want in the release.
+```sh
+git tag -a v0.4.1-alpha cfdc1aa
+git push upstream v0.4.1-alpha
+```
 6.  Do a clean build and then publish the new version to https://plugins.gradle.org<br>
-`./gradlew clean build publishPlugins`
-7.  Merge the release branch back into master.
-8.  Delete the release branch from the repository.  If for some reason a hotfix
-is later needed, start at step 1, but instead of creating a new branch from the tip
-of `master`, instead create the release branch from the commit tagged in step 5.  Do
-not reuse the old release branch.
+```sh
+./gradlew clean build publishPlugins
+```
+7.  Push a new PR that increments build.gradle to `vX.Y.(Z+1)-SNAPSHOT`.  `-SNAPSHOT`
+is standard convention for marking an unofficial build (if users happen to get their
+hands on one built directly from source).
+
+### Hotfixes
+
+Currently the development is manageable, such that release branching can be isolated
+to hot fixes. When that is necessary, do the following:
+
+1.  Create a branch `release_vX.Y.Z` on the `master` repo from the last commit for the
+published version (this was the sha used previously in step 3 from the last section).
+2.  Merge in hotfix PRs to the release branch.
+3.  Merge the release branch back into master.
+4.  Delete the release branch from the repository.
+5.  If further hotfixes are needed, start at step 1, using the last commit from step 2.
+
+### Issue tracking
+Labels are assigned as follows:
+
+label | description
+----- | -----------
+**type** | Type of issue (use one)
+`type:bug` | Defect in the codebase
+`type:enhancement` | Feature request
+`type:push-release` | Request/documentation for a release
+`type:question` | Question from a user
+**status** | Status of the issue
+(none) | Issue has not yet been triaged by a committer
+(assigned to a committer) | A committer is working on this
+`status:duplicate` | Closed as duplicate of another issue (please link in closing comment)
+`status:help-wanted` | Requesting PRs from the public
+`status:icebox` | Nice to have, but indefinitely on hold
+`status:no-repro` | Closed because we could not reproduce the error
+`status:obsolete` | Closed because the issue no longer occurs
+`status:public-dev-assigned` | Expecting a PR from a particular member of the public (GitHub prevents us from assigning the issue explicitly)
+`status:wontfix` | Closed because we've chosen not to fix this
+`status:works-as-intended` | Closed because the described behavior is intended
+**categories** | Which component(s) of the project are affected
+`cat:convenience-magic` | Increasing convenience for plugin users by ex. automatic configuration
+`cat:dependencies` | Handling of dependencies among projects, libraries, etc.
+`cat:docs` | Improving project documentation
+`cat:testing` | Improving project test coverage
+`cat:native-build` | Building the translated code into libraries
+`cat:perf` | Improving performance
+`cat:translation` | The core `j2objc` execution phase, converting Java to Objective-C
+`cat:xcode` | Integration with Xcode

@@ -16,34 +16,167 @@
 
 package com.github.j2objccontrib.j2objcgradle.tasks
 
+import groovy.transform.CompileStatic
 import org.apache.commons.io.output.TeeOutputStream
 import org.gradle.api.InvalidUserDataException
 import org.gradle.api.Project
 import org.gradle.api.file.FileCollection
 import org.gradle.api.file.SourceDirectorySet
 import org.gradle.api.plugins.JavaPlugin
+import org.gradle.process.ExecSpec
 import org.gradle.process.internal.ExecHandleBuilder
 import org.gradle.testfixtures.ProjectBuilder
+import org.gradle.util.GradleVersion
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.ExpectedException
 
 /**
  * Utils tests.
  */
+@CompileStatic
 class UtilsTest {
 
     private Project proj
 
+    @Rule
+    public ExpectedException expectedException = ExpectedException.none();
+
     @Before
     void setUp() {
+        // Default to native OS except for specific tests
+        Utils.setFakeOSNone()
         proj = ProjectBuilder.builder().build()
     }
 
     @Test
-    void testIsWindows() {
-        // TODO: also test for correctness
-        // For now it only tests that the call runs successfully
-        Utils.isWindows()
+    void testCheckMinGradleVersion_valid() {
+        Utils.checkMinGradleVersion(GradleVersion.version('2.4'))
+        Utils.checkMinGradleVersion(GradleVersion.version('2.4.1'))
+        Utils.checkMinGradleVersion(GradleVersion.version('2.5'))
+        Utils.checkMinGradleVersion(GradleVersion.version('3.0'))
+        Utils.checkMinGradleVersion(GradleVersion.version('10.0'))
+    }
+
+    @Test(expected=InvalidUserDataException)
+    void testCheckMinGradleVersion_invalid() {
+        Utils.checkMinGradleVersion(GradleVersion.version('2.3'))
+    }
+
+    @Test
+    void testGetLowerCaseOSName() {
+        // Redundant method call but included for clarity
+        Utils.setFakeOSNone()
+        String realOS = Utils.getLowerCaseOSName(false)
+        assert realOS == Utils.getLowerCaseOSName(true)
+
+        // Fake OS must be different from current OS
+        if (Utils.isMacOSX()) {
+            Utils.setFakeOSWindows()
+        } else {
+            Utils.setFakeOSMacOSX()
+        }
+
+        // OS should now change
+        assert realOS != Utils.getLowerCaseOSName(false)
+        // Ignoring fakeOS still gets realOS
+        assert realOS == Utils.getLowerCaseOSName(true)
+    }
+
+    @Test
+    void test_NativeOS() {
+        // OS should be identified distinctively
+        Utils.setFakeOSNone()
+        // Wierd syntax is so that CompileStatic doesn't complain converting boolean to integer
+        assert 1 == (Utils.isLinux() ? 1 : 0) + (Utils.isMacOSX() ? 1 : 0) + (Utils.isWindows() ? 1 : 0)
+    }
+
+    @Test
+    void testSetFakeOSLinux() {
+        Utils.setFakeOSLinux()
+        assert Utils.isLinux()
+        assert !Utils.isMacOSX()
+        assert !Utils.isWindows()
+    }
+
+    @Test
+    void testSetFakeOSMacOSX() {
+        Utils.setFakeOSMacOSX()
+        assert !Utils.isLinux()
+        assert Utils.isMacOSX()
+        assert !Utils.isWindows()
+    }
+
+    @Test
+    void testSetFakeOSWindows() {
+        Utils.setFakeOSWindows()
+        assert !Utils.isLinux()
+        assert !Utils.isMacOSX()
+        assert Utils.isWindows()
+    }
+
+    @Test
+    void testRequireMacOSX_Linux() {
+        Utils.setFakeOSLinux()
+
+        expectedException.expect(InvalidUserDataException)
+        expectedException.expectMessage('Mac OS X is required for taskName')
+
+        Utils.requireMacOSX('taskName')
+    }
+
+    @Test
+    void testRequireMacOSX_MacOSX() {
+        Utils.setFakeOSMacOSX()
+        Utils.requireMacOSX('taskName')
+        // NOTE: no exception thrown
+    }
+
+    @Test
+    void testRequireMacOSX_Windows() {
+        Utils.setFakeOSWindows()
+
+        expectedException.expect(InvalidUserDataException)
+        expectedException.expectMessage('Mac OS X is required for taskName')
+
+        Utils.requireMacOSX('taskName')
+    }
+
+    @Test
+    void testSeparatorChar_Linux() {
+        Utils.setFakeOSLinux()
+        assert '/' == Utils.fileSeparator()
+    }
+
+    @Test
+    void testSeparatorChar_MacOSX() {
+        Utils.setFakeOSMacOSX()
+        assert '/' == Utils.fileSeparator()
+    }
+
+    @Test
+    void testSeparatorChar_Windows() {
+        Utils.setFakeOSWindows()
+        assert '\\' == Utils.fileSeparator()
+    }
+
+    @Test
+    void testPathSeparator_Linux() {
+        Utils.setFakeOSLinux()
+        assert ':' == Utils.pathSeparator()
+    }
+
+    @Test
+    void testPathSeparator_MacOSX() {
+        Utils.setFakeOSMacOSX()
+        assert ':' == Utils.pathSeparator()
+    }
+
+    @Test
+    void testPathSeparator_Windows() {
+        Utils.setFakeOSWindows()
+        assert ';' == Utils.pathSeparator()
     }
 
     @Test(expected = InvalidUserDataException.class)
@@ -92,21 +225,54 @@ class UtilsTest {
     }
 
     @Test
+    public void testGetLocalProperty_RequestInvalidKey() {
+        File localProperties = proj.file('local.properties')
+        localProperties.write('#IGNORE')
+
+        expectedException.expect(InvalidUserDataException.class)
+        expectedException.expectMessage('Requesting invalid property: requested-invalid-key')
+        // Check list of valid keys is suggested by checking for a single entry:
+        expectedException.expectMessage('debug.enabled')
+
+        Utils.getLocalProperty(proj, 'requested-invalid-key')
+    }
+
+    @Test
+    public void testGetLocalProperty_LocalPropertiesInvalidKey() {
+        File localProperties = proj.file('local.properties')
+        localProperties.write('j2objc.written-invalid-key')
+
+        expectedException.expect(InvalidUserDataException.class)
+        expectedException.expectMessage('Invalid J2ObjC Gradle Plugin property: j2objc.written-invalid-key')
+        expectedException.expectMessage("From local.properties: ${proj.file('local.properties')}")
+        // Check list of valid keys is suggested by checking for a single entry:
+        expectedException.expectMessage('debug.enabled')
+
+        // Request a valid key
+        Utils.getLocalProperty(proj, 'debug.enabled')
+    }
+
+    @Test
     public void testJ2objcHome_LocalProperties() {
         // Write j2objc path to local.properties file within the project
-        String j2objcHomeWritten = File.createTempDir('J2OBJC_HOME', '').path
+        String j2objcHome = File.createTempDir('J2OBJC_HOME', '').path
+        // Backslashes on Windows are silently dropped when loading properties:
+        j2objcHome = j2objcHome.replace('\\', '/')
+
         File localProperties = proj.file('local.properties')
-        localProperties.write("j2objc.home=$j2objcHomeWritten\n")
+        localProperties.write("j2objc.home=$j2objcHome\n")
 
         String j2objcHomeRead = Utils.j2objcHome(proj)
-        assert j2objcHomeWritten.equals(j2objcHomeRead)
+        assert j2objcHome.equals(TestingUtils.windowsToForwardSlash(j2objcHomeRead))
     }
 
     @Test
     public void testJ2objcHome_LocalPropertiesWithTrailingSlash() {
         // Write j2objc path to local.properties file within the project
-        String j2objcHomePath = File.createTempDir('J2OBJC_HOME', '').path
-        String j2objcHomePathWithSlash = j2objcHomePath + '/'
+        String j2objcHomePath = File.createTempDir('J2OBJC_HOME', '').absolutePath
+        // Backslashes on Windows are silently dropped when loading properties:
+        String j2objcHomePathWithSlash = (j2objcHomePath + '/').replace('\\', '/')
+
         File localProperties = proj.file('local.properties')
         localProperties.write("j2objc.home=$j2objcHomePathWithSlash\n")
 
@@ -135,7 +301,7 @@ class UtilsTest {
             return file.path
         }
 
-        String[] expected = ["${proj.projectDir}/src/main/java"]
+        String[] expected = [proj.file('src/main/java').absolutePath]
 
         assert Arrays.equals(expected, srcDirsPaths)
     }
@@ -148,7 +314,7 @@ class UtilsTest {
                 'src/test/resources/com/github/j2objccontrib/j2objcgradle/tasks/prefixes.properties')
 
         List<String> translateArgs = new ArrayList<String>()
-        translateArgs.add("--prefixes ${prefixesProp.absolutePath}")
+        translateArgs.add('--prefixes ' + prefixesProp.absolutePath)
         Properties properties = Utils.packagePrefixes(proj, translateArgs)
 
         Properties expected = new Properties()
@@ -168,7 +334,7 @@ class UtilsTest {
         List<String> translateArgs = new ArrayList<String>()
         // prefix is overwritten by prefixes.properties
         translateArgs.add('--prefix com.example.parent=ParentPrefixArg')
-        translateArgs.add("--prefixes ${prefixesProp.absolutePath}")
+        translateArgs.add('--prefixes ' + prefixesProp.absolutePath)
         // prefix overwrites prefixes.properties
         translateArgs.add('--prefix com.example.parent.subdir=SubdirPrefixArg')
 
@@ -206,121 +372,22 @@ class UtilsTest {
 
     @Test
     public void testJoinedPathArg() {
-        FileCollection fileCollection = proj.files("file1", "file2", "/absoluteFile")
+        String absolutePath = TestingUtils.windowsNoFakeAbsolutePath(File.separator + 'absoluteFile')
+        FileCollection fileCollection =
+                proj.files(
+                        'relative_file1',
+                        'relative_file2',
+                        absolutePath)
         String joinedPathArg = Utils.joinedPathArg(fileCollection)
 
-        String expected = "${proj.projectDir}/file1:${proj.projectDir}/file2:/absoluteFile"
+        String expected =
+                proj.file('relative_file1').absolutePath + File.pathSeparator +
+                proj.file('relative_file2').absolutePath + File.pathSeparator +
+                absolutePath
         assert expected == joinedPathArg
     }
 
     // TODO: testFilterJ2objcOutputForErrorLines()
-
-    @Test
-    void projectExec_StdOut() {
-        ByteArrayOutputStream stdout = new ByteArrayOutputStream()
-        ByteArrayOutputStream stderr = new ByteArrayOutputStream()
-        // This will branch outputs to both the system and internal test OutputStreams
-        // If this is useful, it can be extended to other unit tests
-        TeeOutputStream stdoutTee = new TeeOutputStream(System.out, stdout)
-        TeeOutputStream stderrTee = new TeeOutputStream(System.err, stderr)
-
-        Utils.projectExec(proj, stdout, stderr, null, {
-            executable 'echo'
-            args 'written-stdout'
-            setStandardOutput stdoutTee
-            setErrorOutput stderrTee
-        })
-
-        // newline is added at end of stdout/stderr
-        assert stdout.toString().equals('written-stdout\n')
-        assert stderr.toString().isEmpty()
-    }
-
-    @Test
-    void projectExec_StdErr() {
-        ByteArrayOutputStream stdout = new ByteArrayOutputStream()
-        ByteArrayOutputStream stderr = new ByteArrayOutputStream()
-
-        // TODO: get the command to write to stderr rather than faking it
-        // Tried to do "args '>/dev/stderr'" but it's passed to echo command rather than shell
-        stderr.write('fake-stderr'.getBytes('utf-8'))
-
-        Utils.projectExec(proj, stdout, stderr, null, {
-            executable 'echo'
-            args 'echo-stdout'
-            setStandardOutput stdout
-            setErrorOutput stderr
-        })
-
-        // newline is added at end of stdout/stderr
-        assert stdout.toString().equals('echo-stdout\n')
-        assert stderr.toString().equals('fake-stderr')
-    }
-
-    // TODO: projectExec_NonZeroExit
-    // Needs command line that outputs non-zero result
-
-    @Test
-    void projectExec_HelpfulErrorMessage() {
-        ByteArrayOutputStream stdout = new ByteArrayOutputStream()
-        ByteArrayOutputStream stderr = new ByteArrayOutputStream()
-        // TODO: get command to write to stderr
-        stdout.write('fake-stdout'.getBytes('utf-8'))
-        stderr.write('fake-stderr'.getBytes('utf-8'))
-
-        try {
-            Utils.projectExec(proj, stdout, stderr, null, {
-                executable 'exit'
-                args '1'
-                setStandardOutput stdout
-                setErrorOutput stderr
-            })
-            assert false, 'Expected Exception'
-
-        } catch (InvalidUserDataException exception) {
-            String expected =
-                    'org.gradle.api.InvalidUserDataException: Command Line Failed:\n' +
-                    'exit 1\n' +
-                    'Cause:\n' +
-                    "org.gradle.process.internal.ExecException: A problem occurred starting process 'command 'exit''\n" +
-                    'Standard Output:\n' +
-                    'fake-stdout\n' +
-                    'Error Output:\n' +
-                    'fake-stderr'
-            assert exception.toString().equals(expected)
-        }
-    }
-
-    @Test
-    void projectExec_MatchRegexFailed() {
-        ByteArrayOutputStream stdout = new ByteArrayOutputStream()
-        ByteArrayOutputStream stderr = new ByteArrayOutputStream()
-
-        // String has escaped '/' and '\n' to test escaping
-        String matchRegexOutputs = /(no\/match\n)/
-        try {
-            Utils.projectExec(proj, stdout, stderr, matchRegexOutputs, {
-                executable 'echo'
-                args 'echo-stdout'
-                setStandardOutput stdout
-                setErrorOutput stderr
-            })
-            assert false, 'Expected Exception'
-
-        } catch (InvalidUserDataException exception) {
-            String expected =
-                    'org.gradle.api.InvalidUserDataException: Command Line Succeeded (failure cause listed below):\n' +
-                    'echo echo-stdout\n' +
-                    'Cause:\n' +
-                    'org.gradle.api.InvalidUserDataException: Unable to find expected expected output in stdout or stderr\n' +
-                    'Failed Regex Match: /(no\\/match\\n)/\n' +
-                    'Standard Output:\n' +
-                    'echo-stdout\n' +
-                    '\n' +
-                    'Error Output:\n'
-            assert exception.toString().equals(expected)
-        }
-    }
 
     @Test
     void testMatchRegexOutputStreams_Fails() {
@@ -334,11 +401,13 @@ class UtilsTest {
     void testMatchRegexOutputStreams_MatchString() {
         ByteArrayOutputStream stdout = new ByteArrayOutputStream()
         ByteArrayOutputStream stderr = new ByteArrayOutputStream()
+
         stdout.write('written-stdout'.getBytes('utf-8'))
         stderr.write('written-stderr'.getBytes('utf-8'))
 
-        assert null != Utils.matchRegexOutputs(stdout, stderr, /(std+out)/).equals('stdout')
-        assert null != Utils.matchRegexOutputs(stdout, stderr, /(std+err)/).equals('stderr')
+        // Match each regex against both OutputStreams
+        assert 'stdout' == Utils.matchRegexOutputs(stdout, stderr, /(std+out)/)
+        assert 'stderr' == Utils.matchRegexOutputs(stdout, stderr, /(std+err)/)
     }
 
     @Test
@@ -351,20 +420,355 @@ class UtilsTest {
     }
 
     @Test
-    void testEscapeSlashyString() {
-        String regex = /forward-slash:\/,newline:\n,multi-digit:\d+/
-        assert "/forward-slash:\\/,newline:\\n,multi-digit:\\d+/" == Utils.escapeSlashyString(regex)
+    void testTrimTrailingForwardSlash() {
+        assert '/path/dir' == Utils.trimTrailingForwardSlash('/path/dir')
+        assert '/path/dir' == Utils.trimTrailingForwardSlash('/path/dir/')
     }
 
     @Test
-    void testLogDebugExecSpecOutput() {
-        ExecHandleBuilder execHandleBuilder = new ExecHandleBuilder()
+    void testEscapeSlashyString() {
+        String regex = /forward-slash:\/, newline:\n, multi-digit:\d+/
+        assert "/forward-slash:\\/, newline:\\n, multi-digit:\\d+/" == Utils.escapeSlashyString(regex)
+    }
+
+    @Test
+    void testProjectExecLog() {
+        ExecSpec execSpec = new ExecHandleBuilder()
+        execSpec.setExecutable('/EXECUTABLE')
+        execSpec.args('ARG_1')
+        execSpec.args('ARG_2')
+        execSpec.args('ARG_3', 'ARG_4')
+
         ByteArrayOutputStream stdout = new ByteArrayOutputStream()
         ByteArrayOutputStream stderr = new ByteArrayOutputStream()
-        stderr.write('written-stdout'.getBytes('utf-8'))
-        stdout.write('written-stderr'.getBytes('utf-8'))
+        stdout.write('written-stdout'.getBytes('utf-8'))
+        stderr.write('written-stderr'.getBytes('utf-8'))
 
-        // No validation of results, only that the code runs without error
-        Utils.logDebugExecSpecOutput(stdout, stderr, execHandleBuilder)
+        // Command Succeeded
+        String nativeWorkingDir = '/WORKING_DIR'
+        if (Utils.isWindowsNoFake()) {
+            nativeWorkingDir = 'C:\\WORKING_DIR'
+        }
+        execSpec.setWorkingDir(nativeWorkingDir)
+
+        String execLogSuccess = Utils.projectExecLog(execSpec, stdout, stderr, true, null)
+        String expectedLogSuccess =
+                'Command Line Succeeded:\n' +
+                '/EXECUTABLE ARG_1 ARG_2 ARG_3 ARG_4\n' +
+                'Working Dir:\n' +
+                nativeWorkingDir + '\n' +
+                'Standard Output:\n' +
+                'written-stdout\n' +
+                'Error Output:\n' +
+                'written-stderr'
+        assert expectedLogSuccess.equals(execLogSuccess)
+
+        // Command Failed
+        // Normally this should be a distinct test but this avoid duplicating the setup code
+        Exception cause = new InvalidUserDataException("I'm the cause of it all!")
+        String execLogFailure = Utils.projectExecLog(execSpec, stdout, stderr, false, cause)
+        String expectedLogFailure =
+                'Command Line Failed:\n' +
+                '/EXECUTABLE ARG_1 ARG_2 ARG_3 ARG_4\n' +
+                'Working Dir:\n' +
+                nativeWorkingDir + '\n' +
+                'Cause:\n' +
+                'org.gradle.api.InvalidUserDataException: I\'m the cause of it all!\n' +
+                'Standard Output:\n' +
+                'written-stdout\n' +
+                'Error Output:\n' +
+                'written-stderr'
+        assert expectedLogFailure.equals(execLogFailure)
+    }
+
+    @Test
+    void testSyncResourcesTo() {
+        proj.pluginManager.apply(JavaPlugin)
+        MockProjectExec mockProjectExec = new MockProjectExec(proj, '/J2OBJC_HOME')
+        mockProjectExec.demandDeleteAndReturn(
+                proj.file('SYNC_DIR').absolutePath)
+        mockProjectExec.demandMkDirAndReturn(
+                proj.file('SYNC_DIR').absolutePath)
+        mockProjectExec.demandCopyAndReturn(
+                proj.file('SYNC_DIR').absolutePath,
+                proj.file('src/main/resources').absolutePath,
+                proj.file('src/test/resources').absolutePath)
+
+        Utils.syncResourcesTo(proj, ['main', 'test'], proj.file('SYNC_DIR'))
+
+        mockProjectExec.verify()
+    }
+
+    @Test
+    // Tests intercepting and verifying call to project.copy(...)
+    void testProjectCopy() {
+
+        MockProjectExec mockProjectExec = new MockProjectExec(proj, '/J2OBJC_HOME')
+        mockProjectExec.demandCopyAndReturn(
+                '/DEST-DIR',
+                '/INPUT-DIR-1', '/INPUT-DIR-2')
+
+        Utils.projectCopy(proj, {
+            from '/INPUT-DIR-1', '/INPUT-DIR-2'
+            into '/DEST-DIR'
+        })
+
+        mockProjectExec.verify()
+    }
+
+    @Test
+    // Tests intercepting and verifying call to project.exec(...)
+    void testProjectCopy_TwoCalls() {
+        MockProjectExec mockProjectExec = new MockProjectExec(proj, '/J2OBJC_HOME')
+        mockProjectExec.demandCopyAndReturn(
+                '/DEST-1',
+                '/INPUT-1A', '/INPUT-1B')
+        mockProjectExec.demandCopyAndReturn(
+                '/DEST-2',
+                '/INPUT-2A', '/INPUT-2B')
+
+        Utils.projectCopy(proj, {
+            into '/DEST-1'
+            from '/INPUT-1A', '/INPUT-1B'
+        })
+        Utils.projectCopy(proj, {
+            into '/DEST-2'
+            from '/INPUT-2A', '/INPUT-2B'
+        })
+
+        mockProjectExec.verify()
+    }
+
+    @Test
+    // Tests intercepting and verifying call to project.delete(path1, path2)
+    void testProjectDelete() {
+        MockProjectExec mockProjectExec = new MockProjectExec(proj, '/J2OBJC_HOME')
+
+        mockProjectExec.demandDeleteAndReturn('/PATH1', '/PATH2')
+
+        Utils.projectDelete(proj, '/PATH1', '/PATH2')
+
+        mockProjectExec.verify()
+    }
+
+    @Test
+    void testProjectExec_StdOut() {
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream()
+        ByteArrayOutputStream stderr = new ByteArrayOutputStream()
+        // This will branch outputs to both the system and internal test OutputStreams
+        // If this is useful, it can be extended to other unit tests
+        TeeOutputStream stdoutTee = new TeeOutputStream(System.out, stdout)
+        TeeOutputStream stderrTee = new TeeOutputStream(System.err, stderr)
+
+        String executableIn = 'echo'
+        List<String> argsIn = ['written-stdout']
+        String stdoutExpected = 'written-stdout\n'
+        // Windows command execution requires special care
+        // See: https://github.com/j2objc-contrib/j2objc-gradle/issues/422
+        // SO Help: http://stackoverflow.com/questions/515309/what-does-cmd-c-mean
+        if (Utils.isWindowsNoFake()) {
+            executableIn = 'cmd'
+            argsIn = ['/C', 'echo', 'written-stdout']
+            // Windows has carriage return and newline together
+            stdoutExpected = 'written-stdout\r\n'
+        }
+
+        Utils.projectExec(proj, stdout, stderr, null, {
+            executable executableIn
+            args argsIn
+            setStandardOutput stdoutTee
+            setErrorOutput stderrTee
+        })
+
+        String stdoutActual = stdout.toString()
+        // URLEncoder make debugging easier by showing carriage returns and newlines
+        assert URLEncoder.encode(stdoutExpected, 'UTF-8').equals(URLEncoder.encode(stdoutActual, 'UTF-8'))
+        assert stderr.toString().isEmpty()
+    }
+
+    @Test
+    void testProjectExec_StdErr() {
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream()
+        ByteArrayOutputStream stderr = new ByteArrayOutputStream()
+
+        // TODO: get the command to write to stderr rather than faking it
+        // Tried to do "args '>/dev/stderr'" but it's passed to echo command rather than shell
+        stderr.write('fake-stderr'.getBytes('utf-8'))
+
+        String executableIn = 'echo'
+        List<String> argsIn = ['written-stdout']
+        String stdoutExpected = 'written-stdout\n'
+        String stderrExpected = 'fake-stderr'
+        if (Utils.isWindowsNoFake()) {
+            executableIn = 'cmd'
+            argsIn = ['/C', 'echo', 'written-stdout']
+            stdoutExpected = 'written-stdout\r\n'
+        }
+
+        Utils.projectExec(proj, stdout, stderr, null, {
+            executable executableIn
+            args argsIn
+            setStandardOutput stdout
+            setErrorOutput stderr
+        })
+
+        String stdoutActual = stdout.toString()
+        String stderrActual = stderr.toString()
+        // URLEncoder make debugging easier by showing carriage returns and newlines
+        assert URLEncoder.encode(stdoutExpected, 'UTF-8').equals(URLEncoder.encode(stdoutActual, 'UTF-8'))
+        assert URLEncoder.encode(stderrExpected, 'UTF-8').equals(URLEncoder.encode(stderrActual, 'UTF-8'))
+    }
+
+    // TODO: projectExec_NonZeroExit
+    // Needs command line that outputs non-zero result
+
+    @Test
+    void testProjectExec_HelpfulErrorMessage() {
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream()
+        ByteArrayOutputStream stderr = new ByteArrayOutputStream()
+
+        // TODO: get executable passed to projectExec to write to stderr
+        stdout.write('written-stdout'.getBytes('utf-8'))
+        stderr.write('written-stderr'.getBytes('utf-8'))
+
+        String executableIn = 'exit'
+        List<String> argsIn = ['1']
+        String expectedCmdLine = 'exit 1'
+        String expectedExecExceptionMsg = "A problem occurred starting process 'command 'exit''"
+        if (Utils.isWindowsNoFake()) {
+            executableIn = 'cmd'
+            argsIn = ['/C', 'exit', '1']
+            expectedCmdLine = 'cmd /C exit 1'
+            expectedExecExceptionMsg = "Process 'command 'cmd'' finished with non-zero exit value 1"
+        }
+
+        try {
+            Utils.projectExec(proj, stdout, stderr, null, {
+                executable executableIn
+                args argsIn
+                setStandardOutput stdout
+                setErrorOutput stderr
+            })
+            assert false, 'Expected Exception'
+
+        } catch (InvalidUserDataException exception) {
+            String expected =
+                    'org.gradle.api.InvalidUserDataException: Command Line Failed:\n' +
+                    expectedCmdLine + '\n' +
+                    'Working Dir:\n' +
+                    proj.projectDir.absolutePath + '\n' +
+                    'Cause:\n' +
+                    "org.gradle.process.internal.ExecException: $expectedExecExceptionMsg\n" +
+                    'Standard Output:\n' +
+                    'written-stdout\n' +
+                    'Error Output:\n' +
+                    'written-stderr'
+            String actual = exception.toString()
+            assert expected.equals(actual)
+        }
+    }
+
+    @Test
+    void testProjectExec_MatchRegexFailed() {
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream()
+        ByteArrayOutputStream stderr = new ByteArrayOutputStream()
+
+        String executableIn = 'echo'
+        List<String> argsIn = ['written-stdout']
+        String expectedCmdLine = 'echo written-stdout'
+        if (Utils.isWindowsNoFake()) {
+            executableIn = 'cmd'
+            argsIn = ['/C', 'echo', 'written-stdout']
+            expectedCmdLine = 'cmd /C echo written-stdout'
+        }
+
+        // String has escaped '/' and '\n' to test escaping
+        String matchRegexOutputs = /(no\/match\n)/
+        try {
+            Utils.projectExec(proj, stdout, stderr, matchRegexOutputs, {
+                executable executableIn
+                args argsIn
+                setStandardOutput stdout
+                setErrorOutput stderr
+            })
+            assert false, 'Expected Exception'
+
+        } catch (InvalidUserDataException exception) {
+            String expected =
+                    'org.gradle.api.InvalidUserDataException: Command Line Succeeded:\n' +
+                    expectedCmdLine + '\n' +
+                    'Working Dir:\n' +
+                    proj.projectDir.absolutePath + '\n' +
+                    'Cause:\n' +
+                    'org.gradle.api.InvalidUserDataException: Unable to find expected expected output in stdout or stderr\n' +
+                    'Failed Regex Match: /(no\\/match\\n)/\n' +
+                    'Standard Output:\n' +
+                    'written-stdout\n' +
+                    '\n' +
+                    'Error Output:\n'
+            String actual = exception.toString()
+            // Remove carriage returns as they complicate comparison on Windows
+            if (Utils.isWindowsNoFake()) {
+                actual = actual.replace('\r', '')
+            }
+            assert expected.equals(actual)
+        }
+    }
+
+    @Test
+    void testProjectExec_ThrowException() {
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream()
+        ByteArrayOutputStream stderr = new ByteArrayOutputStream()
+
+        MockProjectExec mockProjectExec = new MockProjectExec(proj, '/J2OBJC_HOME')
+        mockProjectExec.demandExecAndReturn(
+                null,
+                [
+                        'echo',
+                        'written-stdout',
+                ],
+                null,
+                'written-stderr-INSTEAD-OF-STDOUT',
+                new InvalidUserDataException('Faked-Exception'))
+
+        try {
+            Utils.projectExec(proj, stdout, stderr, null, {
+                executable 'echo'
+                args 'written-stdout'
+                setStandardOutput stdout
+                setErrorOutput stderr
+            })
+            assert false
+        } catch (InvalidUserDataException exception) {
+            assert exception.toString().contains('Faked-Exception')
+        }
+
+        mockProjectExec.verify()
+
+        // Verifies that 'echo written-stdout' didn't reach the output streams
+        assert '' == stdout.toString()
+        assert 'written-stderr-INSTEAD-OF-STDOUT' == stderr.toString()
+    }
+
+    @Test
+    // Common sequence is delete destDir, fill with required files, then execute
+    void testProjectDeleteCopyCallSequence() {
+        MockProjectExec mockProjectExec = new MockProjectExec(proj, '/J2OBJC_HOME')
+
+        mockProjectExec.demandDeleteAndReturn('/DELETE-1', '/DELETE-2')
+        mockProjectExec.demandCopyAndReturn('/COPY-DEST', '/COPY-SRC-1', '/COPY-SRC-2')
+        mockProjectExec.demandExecAndReturn(['echo', 'EXEC-CALL'])
+
+        Utils.projectDelete(proj, '/DELETE-1', '/DELETE-2')
+        Utils.projectCopy(proj, {
+            into '/COPY-DEST'
+            from '/COPY-SRC-1', '/COPY-SRC-2'
+        })
+        Utils.projectExec(proj, null, null, null, {
+            executable 'echo'
+            args 'EXEC-CALL'
+        })
+
+        mockProjectExec.verify()
     }
 }

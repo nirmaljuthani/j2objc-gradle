@@ -36,7 +36,7 @@ import org.gradle.api.tasks.TaskAction
 class CycleFinderTask extends DefaultTask {
 
     @InputFiles
-    FileTree getSrcFiles() {
+    FileCollection getSrcInputFiles() {
         // Note that translatePattern does not need to be an @Input because it is
         // solely an input to this method, which is already an input (via @InputFiles).
         FileTree allFiles = Utils.srcSet(project, 'main', 'java')
@@ -45,7 +45,7 @@ class CycleFinderTask extends DefaultTask {
         if (J2objcConfig.from(project).translatePattern != null) {
             ret = allFiles.matching(J2objcConfig.from(project).translatePattern)
         }
-        return ret
+        return Utils.mapSourceFiles(project, ret, getTranslateSourceMapping())
     }
 
     // All input files that could affect translation output, except those in j2objc itself.
@@ -54,17 +54,13 @@ class CycleFinderTask extends DefaultTask {
         // Only care about changes in the generatedSourceDirs paths and not the contents
         // Assumes that any changes in generated code causes change in non-generated @Input
         return new UnionFileCollection([
-                getSrcFiles(),
+                getSrcInputFiles(),
                 project.files(getTranslateClasspaths()),
                 project.files(getTranslateSourcepaths()),
                 project.files(getGeneratedSourceDirs())
         ])
     }
 
-    @OutputFile
-    File reportFile = project.file("${project.buildDir}/reports/${name}.out")
-
-    // j2objcConfig dependencies for UP-TO-DATE checks
     @Input
     int getCycleFinderExpectedCycles() { return J2objcConfig.from(project).cycleFinderExpectedCycles }
 
@@ -87,12 +83,20 @@ class CycleFinderTask extends DefaultTask {
     List<String> getTranslateJ2objcLibs() { return J2objcConfig.from(project).translateJ2objcLibs }
 
     @Input
+    Map<String, String> getTranslateSourceMapping() { return J2objcConfig.from(project).translateSourceMapping }
+
+    @Input
     boolean getFilenameCollisionCheck() { return J2objcConfig.from(project).filenameCollisionCheck }
+
+
+    // Output required for task up-to-date checks
+    @OutputFile
+    File getReportFile() { project.file("${project.buildDir}/reports/${name}.out") }
 
 
     @TaskAction
     void cycleFinder() {
-        String cycleFinderExec = "${getJ2objcHome()}/cycle_finder"
+        String cycleFinderExec = getJ2objcHome() + Utils.fileSeparator() + 'cycle_finder'
         List<String> windowsOnlyArgs = new ArrayList<String>()
         if (Utils.isWindows()) {
             cycleFinderExec = 'java'
@@ -100,7 +104,7 @@ class CycleFinderTask extends DefaultTask {
             windowsOnlyArgs.add("${getJ2objcHome()}/lib/cycle_finder.jar".toString())
         }
 
-        FileCollection fullSrcFiles = getSrcFiles()
+        FileCollection fullSrcFiles = getSrcInputFiles()
         // TODO: extract common methods of Translate and Cycle Finder
         // TODO: Need to understand why generated source dirs are treated differently by CycleFinder
         // vs. translate task.  Here they are directly passed to the binary, but in translate
@@ -123,7 +127,8 @@ class CycleFinderTask extends DefaultTask {
                 project.files(Utils.j2objcLibs(getJ2objcHome(), getTranslateJ2objcLibs()))
         ])
         // TODO: comment explaining ${project.buildDir}/classes
-        String classpathArg = Utils.joinedPathArg(classpathFiles) + ":${project.buildDir}/classes"
+        String classpathArg = Utils.joinedPathArg(classpathFiles) +
+                              Utils.pathSeparator() + "${project.buildDir}/classes"
 
         ByteArrayOutputStream stdout = new ByteArrayOutputStream()
         ByteArrayOutputStream stderr = new ByteArrayOutputStream()
@@ -164,7 +169,7 @@ class CycleFinderTask extends DefaultTask {
             if (!Utils.isProjectExecNonZeroExit(exception)) {
                 throw exception
             }
-
+            
             String cyclesFoundStr = Utils.matchRegexOutputs(stdout, stderr, cyclesFoundRegex)
             if (!cyclesFoundStr?.isInteger()) {
                 String message =
@@ -192,10 +197,10 @@ class CycleFinderTask extends DefaultTask {
                 throw new InvalidUserDataException(message)
             }
             // Suppress exception when cycles found == cycleFinderExpectedCycles
+        } finally {
+            // Write output always.
+            getReportFile().write(Utils.stdOutAndErrToLogString(stdout, stderr))
+            logger.debug("CycleFinder Output: ${getReportFile().path}")
         }
-
-        // Only write output if task is successful
-        reportFile.write(Utils.stdOutAndErrToLogString(stdout, stderr))
-        logger.debug("CycleFinder Output: ${reportFile.path}")
     }
 }

@@ -15,19 +15,34 @@
  */
 
 package com.github.j2objccontrib.j2objcgradle
-
 import com.github.j2objccontrib.j2objcgradle.tasks.Utils
 import com.google.common.annotations.VisibleForTesting
 import groovy.transform.CompileStatic
+import groovy.transform.TypeCheckingMode
 import org.gradle.api.InvalidUserDataException
 import org.gradle.api.Project
 import org.gradle.api.Task
-import org.gradle.api.tasks.bundling.AbstractArchiveTask
 import org.gradle.api.tasks.util.PatternSet
 import org.gradle.util.ConfigureUtil
-
 /**
- * Further configuration uses the following fields, setting them in j2objcConfig within build.gradle
+ * j2objcConfig is used to configure the plugin with the project's build.gradle.
+ *
+ * All paths are resolved using Gradle's <a href="https://docs.gradle.org/current/javadoc/org/gradle/api/Project.html#file(java.lang.Object)">project.file(...)</a>
+ *
+ *
+ * Basic Example:
+ *
+ * j2objcConfig {
+ *     xcodeProjectDir '../ios'
+ *     xcodeTarget 'IOS-APP'
+ *     finalConfigure()
+ * }
+ *
+ *
+ * Complex Example:
+ *
+ * TODO...
+ *
  */
 @CompileStatic
 class J2objcConfig {
@@ -49,25 +64,10 @@ class J2objcConfig {
         nativeCompilation = new NativeCompilation(project)
 
         // Provide defaults for assembly output locations.
-        destSrcDir = "${project.buildDir}/j2objcOutputs/src/main/objc"
-        destSrcDirTest = "${project.buildDir}/j2objcOutputs/src/test/objc"
-        destLibDir = "${project.buildDir}/j2objcOutputs/lib"
+        destSrcMainDir = new File(project.buildDir, 'j2objcOutputs/src/main').absolutePath
+        destSrcTestDir = new File(project.buildDir, 'j2objcOutputs/src/test').absolutePath
+        destLibDir = new File(project.buildDir, 'j2objcOutputs/lib').absolutePath
     }
-
-    /**
-     * Where to assemble generated main source files.
-     * <p/>
-     * Defaults to $buildDir/j2objcOutputs/src/main/objc
-     */
-    String destSrcDir = null
-
-    /**
-     * Where to assemble generated test source files.
-     * <p/>
-     * Can be the same directory as destDir
-     * Defaults to $buildDir/j2objcOutputs/src/test/objc
-     */
-    String destSrcDirTest = null
 
     /**
      * Where to assemble generated main libraries.
@@ -75,6 +75,42 @@ class J2objcConfig {
      * Defaults to $buildDir/j2objcOutputs/lib
      */
     String destLibDir = null
+
+    /**
+     * Where to assemble generated main source and resources files.
+     * <p/>
+     * Defaults to $buildDir/j2objcOutputs/src/main/objc
+     */
+    String destSrcMainDir = null
+
+    /**
+     * Where to assemble generated test source and resources files.
+     * <p/>
+     * Can be the same directory as destDir
+     * Defaults to $buildDir/j2objcOutputs/src/test/objc
+     */
+    String destSrcTestDir = null
+
+    // Private helper methods
+    // Should use instead of accessing client set 'dest' strings
+    File getDestLibDirFile() {
+        return project.file(destLibDir)
+    }
+    File getDestSrcDirFile(String sourceSetName, String fileType) {
+        assert sourceSetName in ['main', 'test']
+        assert fileType in ['objc', 'resources']
+
+        File destSrcDir = null
+        if (sourceSetName == 'main') {
+            destSrcDir = project.file(destSrcMainDir)
+        } else if (sourceSetName == 'test') {
+            destSrcDir = project.file(destSrcTestDir)
+        } else {
+            assert false, "Unsupported sourceSetName: $sourceSetName"
+        }
+
+        return project.file(new File(destSrcDir, fileType))
+    }
 
     /**
      * Generated source files directories, e.g. from dagger annotations.
@@ -147,6 +183,17 @@ class J2objcConfig {
     }
 
     /**
+     * Enables --build-closure, which translates classes referenced from the
+     * list of files passed for translation, using the
+     * {@link #translateSourcepaths}.
+     */
+    void enableBuildClosure() {
+        if (!translateArgs.contains('--build-closure')) {
+            translateArgs('--build-closure')
+        }
+    }
+
+    /**
      *  Local jars for translation e.g.: "lib/json-20140107.jar", "lib/somelib.jar".
      *  This will be added to j2objc as a '-classpath' argument.
      */
@@ -174,6 +221,12 @@ class J2objcConfig {
         appendArgs(this.translateSourcepaths, 'translateSourcepaths', translateSourcepaths)
     }
 
+    /**
+     * True iff only translation (and cycle finding, if applicable) should be attempted,
+     * skipping all compilation, linking, and testing tasks.
+     */
+    boolean translateOnlyMode = false
+
 
     // Do not use groovydoc, this option should remain undocumented.
     // WARNING: Do not use this unless you know what you are doing.
@@ -184,7 +237,28 @@ class J2objcConfig {
     boolean UNSAFE_incrementalBuildClosure = false
 
     /**
-     * Additional libraries that are part of the j2objc distribution.
+     * Experimental functionality to automatically configure dependencies.
+     * Consider you have dependencies like:
+     * <pre>
+     * dependencies {
+     *     compile project(':peer1')                  // type (1)
+     *     compile 'com.google.code.gson:gson:2.3.1'  // type (3)
+     *     compile 'com.google.guava:guava:18.0'      // type (2)
+     *     testCompile 'junit:junit:4.11'             // type (2)
+     * }
+     * </pre>
+     * Project dependencies (1) will be added as a `j2objcLink` dependency.
+     * Libraries already included in j2objc (2) will be ignored.
+     * External libraries in Maven (3) will be added in source JAR form to
+     * `j2objcTranslate`, and translated using `--build-closure`.
+     * Dependencies must be fully specified before you call finalConfigure().
+     * <p/>
+     * This will become the default when stable in future releases.
+     */
+    boolean autoConfigureDeps = false
+
+    /**
+     * Additional Java libraries that are part of the j2objc distribution.
      * <p/>
      * For example:
      * <pre>
@@ -202,6 +276,18 @@ class J2objcConfig {
             // Libraries that don't need CycleFinder fixes
             "javax.inject-1.jar", "jsr305-3.0.0.jar",
             "mockito-core-1.9.5.jar"]
+
+    /**
+     * Additional native libraries that are part of the j2objc distribution.
+     * <p/>
+     * For example:
+     * <pre>
+     * linkJ2objcLibs = ["guava", "jsr305"]
+     * </pre>
+     */
+    // J2objc default libraries, from $J2OBJC_HOME/lib/..., without '.a' extension.
+    // TODO: auto add libraries based on java dependencies, warn on version differences
+    List<String> linkJ2objcLibs = ['guava', 'j2objc_main', 'javax_inject', 'jsr305']
 
 
     // TODO: warn if different versions than testCompile from Java plugin
@@ -247,10 +333,34 @@ class J2objcConfig {
     }
 
     /**
+     * A mapping from source file names (in the project Java sourcesets) to alternate
+     * source files.
+     * Both before and after names (keys and values) are evaluated using project.file(...).
+     * <p/>
+     * Mappings can be used to have completely different implementations in your Java
+     * jar vs. your Objective-C library.  This can be especially useful when compiling
+     * a third-party library and you need to provide non-trivial OCNI implementations
+     * in Objective-C.
+     */
+    Map<String, String> translateSourceMapping = [:]
+
+    /**
+     * Adds a new source mapping.
+     * @see #translateSourceMapping
+     */
+    void translateSourceMapping(String before, String after) {
+        translateSourceMapping.put(before, after)
+    }
+
+    /**
      * @see #dependsOnJ2objcLib(org.gradle.api.Project)
+     * @deprecated Use `dependencies { j2objcLinkage project(':beforeProjectName') }` or
+     * `autoConfigureDeps = true` instead.
      */
     // TODO: Do this automatically based on project dependencies.
+    @Deprecated
     void dependsOnJ2objcLib(String beforeProjectName) {
+        //noinspection GrDeprecatedAPIUsage
         dependsOnJ2objcLib(project.project(beforeProjectName))
     }
 
@@ -267,33 +377,18 @@ class J2objcConfig {
      * Do not also include beforeProject's java source or jar in the
      * translateSourcepaths or translateClasspaths, respectively.  Calling this method
      * is preferable and sufficient.
+     *
+     * @deprecated Use `dependencies { j2objcLinkage project(':beforeProjectName') }` or
+     * `autoConfigureDeps=true` instead.
      */
-    // TODO: Do this automatically based on project dependencies.
+    // TODO: Phase this API out, and have J2ObjC-applied project dependencies controlled
+    // solely via `j2objcLinkage` configuration.
+    @CompileStatic(TypeCheckingMode.SKIP)
+    @Deprecated
     void dependsOnJ2objcLib(Project beforeProject) {
-        // We need to have j2objcConfig on the beforeProject configured first.
-        project.evaluationDependsOn beforeProject.path
-
-        if (!beforeProject.plugins.hasPlugin(J2objcPlugin)) {
-            String message = "$beforeProject does not use the j2objc plugin.\n" +
-                          "dependsOnJ2objcLib can be used only with another project that\n" +
-                          "itself uses the j2objc plugin."
-            throw new InvalidUserDataException(message)
+        project.dependencies {
+            j2objcLinkage beforeProject
         }
-
-        // Build and test the java/objc libraries and the objc headers of
-        // the other project first.
-        // Since we assert the presence of the J2objcPlugin above,
-        // we are guaranteed that the java plugin, which creates the jar task,
-        // is also present.
-        project.tasks.getByName('j2objcPreBuild').dependsOn {
-            return [beforeProject.tasks.getByName('j2objcBuild'),
-                    beforeProject.tasks.getByName('jar')]
-        }
-        AbstractArchiveTask jarTask = beforeProject.tasks.getByName('jar') as AbstractArchiveTask
-        project.logger.debug("$project:j2objcTranslate must use ${jarTask.archivePath}")
-        translateClasspaths += jarTask.archivePath.absolutePath
-
-        nativeCompilation.dependsOnJ2objcLib(beforeProject)
     }
 
     /**
@@ -302,20 +397,58 @@ class J2objcConfig {
      * The three ios_arm* architectures are for iPhone and iPad devices, while
      * ios_i386 and ios_x86_64 are for their simulators.
      * <p/>
-     * Adding an unrecognized new architecture here will fail.
+     * By default, only common modern iOS architectures will be built:
+     * ios_arm64, ios_armv7, ios_x86_64.  You may choose to add any of the remaining
+     * entries from NativeCompilation.ALL_SUPPORTED_ARCHS (ios_i386 and ios_armv7s)
+     * to support all possible iOS architectures. Listing any new architectures outside of
+     * ALL_SUPPORTED_ARCHS will fail the build.
      * <p/>
      * Removing an architecture here will cause that architecture not to be built
      * and corresponding gradle tasks to not be created.
-     * <p/>
      * <pre>
      * supportedArchs = ['ios_arm64']  // Only build libraries for 64-bit iOS devices
      * </pre>
-     *
+     * The options are:
+     * <ul>
+     * <li>'ios_arm64' => iPhone 5S, 6, 6 Plus
+     * <li>'ios_armv7' => iPhone 4, 4S, 5
+     * <li>'ios_i386' => iOS Simulator on 32-bit OS X
+     * <li>'ios_x86_64' => iOS Simulator on 64-bit OS X
+     * </ul>
      * @see NativeCompilation#ALL_SUPPORTED_ARCHS
      */
     // Public to allow assignment of array of targets as shown in example
-    List<String> supportedArchs = NativeCompilation.ALL_SUPPORTED_ARCHS.clone() as List<String>
+    List<String> supportedArchs = ['ios_arm64', 'ios_armv7', 'ios_x86_64']
 
+    /**
+     * An architecture is active if it is both supported ({@link #supportedArchs})
+     * and enabled in the current environment via the comma-separated j2objc.enabledArchs
+     * value in local.properties.
+     * <p/>
+     * If no j2objc.enabledArchs value is specified in local.properties, all supported
+     * architectures are also active, otherwise the intersection of supportedArchs
+     * and j2objc.enabledArchs is used.
+     */
+    List<String> getActiveArchs() {
+        // null is the default value, since an explicit empty string means no architectures
+        // are enabled.
+        String archsCsv = Utils.getLocalProperty(project, 'enabledArchs', null)
+        if (archsCsv == null) {
+            return supportedArchs
+        }
+        List<String> enabledArchs = archsCsv.split(',').toList()
+        // Given `j2objc.enabledArchs=` we will have one architecture of empty string,
+        // instead we want no architectures at all in this case.
+        enabledArchs.remove('')
+        List<String> invalidArchs = enabledArchs.minus(
+                NativeCompilation.ALL_SUPPORTED_ARCHS.clone() as List<String>).toList()
+        if (!invalidArchs.isEmpty()) {
+            throw new InvalidUserDataException("Invalid 'enabledArchs' entry: " + invalidArchs.join(', '))
+        }
+        // Keep the return value sorted to prevent changes in intersection ordering
+        // from forcing a rebuild.
+        return supportedArchs.intersect(enabledArchs).toList().sort()
+    }
 
     // TEST
     /**
@@ -388,6 +521,7 @@ class J2objcConfig {
      * @param extraObjcSrcDirs add directories for Objective-C source to be compiled
      */
     void extraObjcSrcDirs(String... extraObjcSrcDirs) {
+        verifyNoSpaceArgs('extraObjcSrcDirs', extraObjcSrcDirs)
         for (String arg in extraObjcSrcDirs) {
             this.extraObjcSrcDirs += arg
         }
@@ -403,6 +537,7 @@ class J2objcConfig {
      * @param extraObjcCompilerArgs add arguments to pass to the native compiler.
      */
     void extraObjcCompilerArgs(String... extraObjcCompilerArgs) {
+        verifyNoSpaceArgs('extraObjcCompilerArgs', extraObjcCompilerArgs)
         for (String arg in extraObjcCompilerArgs) {
             this.extraObjcCompilerArgs += arg
         }
@@ -418,6 +553,7 @@ class J2objcConfig {
      * @param extraLinkerArgs add arguments to pass to the native linker.
      */
     void extraLinkerArgs(String... extraLinkerArgs) {
+        verifyNoSpaceArgs('extraLinkerArgs', extraLinkerArgs)
         for (String arg in extraLinkerArgs) {
             this.extraLinkerArgs += arg
         }
@@ -443,37 +579,83 @@ class J2objcConfig {
     // XCODE
     /**
      * Directory of the target Xcode project.
+     *
+     * Suggested location is '../ios'
+     * See J2ObjC Plugin <a href="https://github.com/j2objc-contrib/j2objc-gradle/blob/master/README.md#folder-structure">Folder Structure</a>
+     *
      */
     String xcodeProjectDir = null
     /**
-     * Xcode target the generated files should be linked to.
+     * Xcode app target the generated library should be linked to.
+     *
+     * This will automatically add linkage for any target that starts with the
+     * same name. This should include any Test and Watch targets. For the example of
+     * xcodeTarget == 'IOS-APP', it will add targets for 'IOS-APPTests',
+     * 'IOS-APP WatchKit App' & 'IOS-APP WatchKit Extension' (if they exist).
      */
     String xcodeTarget = null
 
+
     protected boolean finalConfigured = false
     /**
-     * Configures the native build using.  Must be called at the very
+     * Configures the j2objc build.  Must be called at the very
      * end of your j2objcConfig block.
      */
-    // TODO: When Gradle makes it possible to modify a native build config
-    // after initial creation, we can remove this, and have methods on this object
-    // mutate the existing native model { } block.  See:
-    // https://discuss.gradle.org/t/problem-with-model-block-when-switching-from-2-2-1-to-2-4/9937
     @VisibleForTesting
     void finalConfigure() {
-        nativeCompilation.apply(project.file("${project.buildDir}/j2objcSrcGen"))
+        validateConfiguration()
+        // Conversion of compile and testCompile dependencies occurs optionally.
+        if (autoConfigureDeps) {
+            convertDeps()
+        }
+        // Resolution of j2objcTranslateSource dependencies occurs always.
+        // This lets users turn off autoConfigureDeps but manually set j2objcTranslateSource.
+        resolveDeps()
+        configureNativeCompilation()
+        configureTaskState()
         finalConfigured = true
+    }
 
-        // For convenience, disable all debug and/or release tasks if the user desires.
-        // Note all J2objcPlugin-created tasks are of the form `j2objc.*(Debug|Release)?`
-        // however Native plugin-created tasks (on our behalf) are of the form `.*((D|d)ebug|(R|r)elease).*(j|J)2objc.*'
-        // so these patterns find all such tasks.
+    protected void validateConfiguration() {
+        assert destLibDir != null
+        assert destSrcMainDir != null
+        assert destSrcTestDir != null
+    }
 
+    protected void configureNativeCompilation() {
+        // TODO: When Gradle makes it possible to modify a native build config
+        // after initial creation, we can remove this, and have methods on this object
+        // mutate the existing native model { } block.  See:
+        // https://discuss.gradle.org/t/problem-with-model-block-when-switching-from-2-2-1-to-2-4/9937
+        nativeCompilation.apply(project.file("${project.buildDir}/j2objcSrcGen"))
+    }
+
+    protected void convertDeps() {
+        new DependencyConverter(project, this).configureAll()
+    }
+
+    protected void resolveDeps() {
+        new DependencyResolver(project, this).configureAll()
+    }
+
+    protected void configureTaskState() {
         // Disable only if explicitly present and not true.
-        boolean debugEnabled = Boolean.parseBoolean(Utils.getLocalProperty(project, 'debugEnabled', 'true'))
-        boolean releaseEnabled = Boolean.parseBoolean(Utils.getLocalProperty(project, 'releaseEnabled', 'true'))
+        boolean debugEnabled = Boolean.parseBoolean(Utils.getLocalProperty(project, 'debug.enabled', 'true'))
+        boolean releaseEnabled = Boolean.parseBoolean(Utils.getLocalProperty(project, 'release.enabled', 'true'))
+        // Enable only if explicitly present in either the project config OR the local config.
+        boolean translateOnlyMode = this.translateOnlyMode ||
+                                    Boolean.parseBoolean(Utils.getLocalProperty(project, 'translateOnlyMode', 'false'))
+
+        if (!translateOnlyMode) {
+            Utils.requireMacOSX('Native Compilation of translated code task')
+        }
+
         project.tasks.all { Task task ->
             String name = task.name
+            // For convenience, disable all debug and/or release tasks if the user desires.
+            // Note all J2objcPlugin-created tasks are of the form `j2objc.*(Debug|Release)?`
+            // however Native plugin-created tasks (on our behalf) are of the form `.*((D|d)ebug|(R|r)elease).*(j|J)2objc.*'
+            // so these patterns find all such tasks.
             if (name.contains('j2objc') || name.contains('J2objc')) {
                 if (!debugEnabled && (name.contains('debug') || name.contains('Debug'))) {
                     task.enabled = false
@@ -482,8 +664,19 @@ class J2objcConfig {
                     task.enabled = false
                 }
             }
+
+            // Support translation-only mode.
+            if (translateOnlyMode) {
+                // First pattern matches all native-compilation tasks.
+                // Second pattern matches plugin-specific tasks beyond translation.
+                if ((name =~ /^.*((J|j)2objc(Executable|StaticLibrary|SharedLibrary|Objc))$/).matches() ||
+                    (name =~ /^j2objc(Assemble|PackLibraries|Test)(Debug|Release)$/).matches()) {
+                    task.enabled = false
+                }
+            }
         }
     }
+
     boolean isFinalConfigured() {
         return finalConfigured
     }
@@ -496,8 +689,15 @@ class J2objcConfig {
     // }
     @VisibleForTesting
     static void appendArgs(List<String> listArgs, String nameArgs, String... args) {
+        verifyNoSpaceArgs(nameArgs, args)
+        listArgs.addAll(Arrays.asList(args))
+    }
+
+    // Verify that no argument contains a space
+    @VisibleForTesting
+    static void verifyNoSpaceArgs(String nameArgs, String... args) {
         if (args == null) {
-            throw new InvalidUserDataException("args == null!")
+            throw new InvalidUserDataException("$nameArgs == null!")
         }
         for (String arg in args) {
             if (arg.contains(' ')) {
@@ -507,6 +707,14 @@ class J2objcConfig {
                         "$nameArgs $rewrittenArgs")
             }
         }
-        listArgs.addAll(Arrays.asList(args))
+    }
+
+    @VisibleForTesting
+    void testingOnlyPrepConfigurations() {
+        // When testing we don't always want to apply the entire plugin
+        // before calling finalConfigure.
+        project.configurations.create('j2objcTranslationClosure')
+        project.configurations.create('j2objcTranslation')
+        project.configurations.create('j2objcLinkage')
     }
 }

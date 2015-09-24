@@ -224,7 +224,7 @@ class NativeCompilation {
                                 }
                             }
                         }
-                        j2objcConfig.supportedArchs.each { String arch ->
+                        j2objcConfig.activeArchs.each { String arch ->
                             if (!(arch in ALL_SUPPORTED_ARCHS)) {
                                 throw new InvalidUserDataException(
                                         "Requested architecture $arch must be one of $ALL_SUPPORTED_ARCHS")
@@ -296,7 +296,10 @@ class NativeCompilation {
 
                     // J2ObjC provided libraries and search path:
                     // TODO: should we link to all? Or just the 'standard' J2ObjC libraries?
-                    linker.args '-lguava', '-lj2objc_main', '-ljavax_inject', '-ljre_emul', '-ljsr305'
+                    linker.args '-ljre_emul'
+                    j2objcConfig.linkJ2objcLibs.each { String libArg ->
+                        linker.args "-l$libArg"
+                    }
                     linker.args "-L$j2objcPath/lib"
 
                     // J2ObjC iOS library dependencies:

@@ -17,9 +17,16 @@
 package com.github.j2objccontrib.j2objcgradle.tasks
 
 import groovy.mock.interceptor.MockFor
+import groovy.transform.stc.ClosureParams
+import groovy.transform.stc.SimpleType
 import groovy.util.logging.Slf4j
 import org.gradle.api.Project
+import org.gradle.api.file.CopySpec
+import org.gradle.api.internal.file.copy.DefaultCopySpec
+import org.gradle.api.tasks.WorkResult
 import org.gradle.process.ExecResult
+import org.gradle.process.ExecSpec
+import org.gradle.process.internal.ExecHandleBuilder
 import org.gradle.util.ConfigureUtil
 
 /**
@@ -37,16 +44,24 @@ class MockProjectExec {
 
     private Project project
     private String j2objcHome
-    private static final String j2objcHomeStd = '/J2OBJC_HOME'
-    private static final String projectDirStd = '/PROJECT_DIR'
+
+    // Windows backslashes are converted to forward slashes for easier verification
+    private String initWorkingDir = '/INIT_WORKING_DIR'
+    private static final String j2objcHomeCanonicalized = '/J2OBJC_HOME'
+    private static final String projectDirCanonicalized = '/PROJECT_DIR'
 
     private MockFor mockForProj = new MockFor(Project)
-    private MockExec mockExec = new MockExec()
+    private ExecSpec execSpec = new ExecHandleBuilder()
     private GroovyObject proxyInstance
 
     MockProjectExec(Project project, String j2objcHome) {
         this.project = project
         this.j2objcHome = j2objcHome
+
+        initWorkingDir = TestingUtils.windowsNoFakeAbsolutePath(initWorkingDir)
+
+        // This prevents the test error: "Cannot convert relative path . to an absolute file."
+        execSpec.setWorkingDir(initWorkingDir)
 
         // TODO: find a more elegant way to do this that doesn't require intercepting all methods
         // http://stackoverflow.com/questions/31129003/mock-gradle-project-exec-using-metaprogramming
@@ -55,9 +70,15 @@ class MockProjectExec {
 
         // This intercepts all methods, stubbing out exec and passing through all other invokes
         project.metaClass.invokeMethod = { String name, Object[] args ->
-            if (name == 'exec') {
-                // Call the proxy object so that it can track verifications
+            // Call the proxy object so that it can track verifications
+            if (name == 'copy') {
+                return projectProxyInstance().copy((Closure) args.first())
+            } else if (name == 'delete') {
+                return projectProxyInstance().delete(args.first())
+            } else if (name == 'exec') {
                 return projectProxyInstance().exec((Closure) args.first())
+            } else if (name == 'mkdir') {
+                return projectProxyInstance().mkdir(args.first())
             } else {
                 // This calls the delegate without causing infinite recursion
                 // http://stackoverflow.com/a/10126006/1509221
@@ -102,45 +123,201 @@ class MockProjectExec {
                   "$metaMethod")
     }
 
-    Project projectProxyInstance() {
-        proxyInstance = mockForProj.proxyInstance()
-        return ( Project ) proxyInstance
+    private Project projectProxyInstance() {
+        // proxyInstance is only created once and then reused forever
+        // Requires new MockProjectExec for another demand / verify configuration
+        if (proxyInstance == null) {
+            proxyInstance = mockForProj.proxyInstance()
+        }
+        return (Project) proxyInstance
+    }
+
+    void verify() {
+        mockForProj.verify((GroovyObject) projectProxyInstance())
+    }
+
+    void demandCopyAndReturn(String intoParam, String... fromParam) {
+        assert proxyInstance == null, "Demand calls must be prior to calling projectProxyInstance"
+
+        demandCopyAndReturn({
+            into intoParam
+            fromParam.each { String fromStr ->
+                from fromStr
+            }
+        })
+    }
+
+    // CopySpec as parameter
+    void demandCopyAndReturn(
+            @ClosureParams(value = SimpleType.class, options = "org.gradle.api.file.CopySpec")
+            @DelegatesTo(CopySpec)
+                    Closure expectedClosure) {
+
+        mockForProj.demand.copy { Closure closure ->
+
+            DefaultCopySpec copySpec = new DefaultCopySpec(null, null)
+            ConfigureUtil.configure(closure, copySpec)
+
+            DefaultCopySpec expectedSpec = new DefaultCopySpec(null, null)
+            ConfigureUtil.configure(expectedClosure, expectedSpec)
+
+            // destDir - exceeds access rights
+            assert ((String) expectedSpec.destDir).equals((String) copySpec.destDir)
+
+            // includeEmptyDirs
+            assert expectedSpec.getIncludeEmptyDirs() == copySpec.getIncludeEmptyDirs()
+
+            // includes
+            assert expectedSpec.getIncludes().equals(copySpec.getIncludes())
+
+            // includes
+            assert expectedSpec.getExcludes().equals(copySpec.getExcludes())
+
+            // sourcepaths
+            // equals between Set<Object> doesn't work, so compare List<String>
+            List<String> expectedSourcepaths = expectedSpec.getSourcePaths().collect { Object obj ->
+                return obj.toString()
+            }
+            List<String> sourcepaths = copySpec.getSourcePaths().collect { Object obj ->
+                return obj.toString()
+            }
+            assert expectedSourcepaths == sourcepaths
+
+            return (WorkResult) null
+        }
+    }
+
+    static String getAbsolutePathFromObject(Object path) {
+        if (path instanceof String) {
+            return (String) path
+        } else if (path instanceof File) {
+            return ((File) path).getAbsolutePath()
+        }
+        assert false, "Not implemented for type: ${path.class}, ${path}"
+        return null
+    }
+
+    void demandDeleteAndReturn(String... expectedPaths) {
+        mockForProj.demand.delete { Object[] args ->
+
+            // Convert args to list of path strings
+            List<String> pathsList = new ArrayList<String>()
+            args.each { Object obj ->
+                pathsList.add(getAbsolutePathFromObject(obj))
+            }
+
+            List<Object> expectedPathsList = Arrays.asList(expectedPaths)
+            assert expectedPathsList.equals(pathsList)
+
+            // Assume that something was deleted
+            return true
+        }
+    }
+
+    void demandDeleteThenMkDirAndReturn(String expectedPath) {
+
+        mockForProj.demand.delete { Object path ->
+            assert expectedPath == getAbsolutePath(path)
+        }
+        mockForProj.demand.mkdir { Object path ->
+            assert expectedPath == getAbsolutePath(path)
+        }
+    }
+
+    void demandExecAndReturn(
+            List<String> expectedCommandLine,
+            List<String> expectedWindowsExecutableAndArgs) {
+        demandExecAndReturn(
+                null, expectedCommandLine, expectedWindowsExecutableAndArgs, null, null, null)
     }
 
     void demandExecAndReturn(
             List<String> expectedCommandLine) {
-        demandExecAndReturn(null, expectedCommandLine, null, null, null)
+        demandExecAndReturn(
+                null, expectedCommandLine, null, null, null, null)
     }
 
     void demandExecAndReturn(
-            String expectWorkingDir, List<String> expectedCommandLine,
+            String expectWorkingDir,
+            List<String> expectedCommandLine,
+            String stdout, String stderr,
+            Exception exceptionToThrow) {
+        demandExecAndReturn(
+                // Empty expectedWindowsExecutableAndArgs
+                expectWorkingDir, expectedCommandLine, null, stdout, stderr, exceptionToThrow)
+    }
+
+    void demandExecAndReturn(
+            String expectWorkingDir,
+            List<String> expectedCommandLine,
+            List<String> expectedWindowsExecutableAndArgs,
             String stdout, String stderr,
             Exception exceptionToThrow) {
 
+        assert proxyInstance == null, "Demand calls must be prior to calling projectProxyInstance"
+
         mockForProj.demand.exec { Closure closure ->
 
-            ConfigureUtil.configure(closure, mockExec)
+            ExecSpec execSpec = new ExecHandleBuilder()
+            // This prevents the test error: "Cannot convert relative path . to an absolute file."
 
-            assert expectedCommandLine[0] == mockExec.executable.replace(j2objcHome, j2objcHomeStd)
-            expectedCommandLine.remove(0)
+            execSpec.setWorkingDir(initWorkingDir)
 
-            List<String> canonicalizedArgs = mockExec.args.collect { String arg ->
-                return arg
-                        .replace(j2objcHome, j2objcHomeStd)
-                        .replace(project.projectDir.path, projectDirStd)
+            ConfigureUtil.configure(closure, execSpec)
+
+            // Substitute first entry in command line with Windows specific executable and args
+            // Example for translateTask:
+            //   Before: ['j2objc', expectedArgs...]
+            //   After:  ['java', '-jar', '/J2OBJC_HOME/lib/j2objc.jar', expectedArgs...]
+            if (Utils.isWindows() && expectedWindowsExecutableAndArgs != null) {
+                expectedCommandLine.remove(0)
+                expectedCommandLine.addAll(0, expectedWindowsExecutableAndArgs)
             }
-            assert expectedCommandLine == canonicalizedArgs
-            assert expectWorkingDir == mockExec.workingDir
+
+            String expectedExecutable = expectedCommandLine.remove(0)
+            assert TestingUtils.windowsToForwardSlash(expectedExecutable) ==
+                   TestingUtils.windowsToForwardSlash(execSpec.getExecutable())
+                           .replace(j2objcHome, j2objcHomeCanonicalized)
+
+            // Actual Arguments => canonicalize to simplify writing unit tests
+            List<String> actualArgsCanonicalized = execSpec.getArgs().collect { String arg ->
+                return TestingUtils.windowsToForwardSlash(arg)
+                        // Use '/J2OBJC_HOME' in unit tests
+                        .replace(TestingUtils.windowsToForwardSlash(j2objcHome), j2objcHomeCanonicalized)
+                        // Use '/PROJECT_DIR' in unit tests
+                        .replace(TestingUtils.windowsToForwardSlash(project.projectDir.absolutePath), projectDirCanonicalized)
+            }
+            // Expected Arguments => Windows replacement
+            // 1) pathSeparator replace, switching ':' for ';'
+            // 2) separator replace, switching '\\' for '/'
+            List<String> expectedArgsCanonicalized = expectedCommandLine.collect { String arg ->
+                assert !arg.contains('\\')
+                if (Utils.isWindows()) {
+                    assert 'C:' == TestingUtils.windowsAbsolutePathPrefix
+                    // Hacky way of preserving 'C:' prefix for absolute paths
+                    arg = TestingUtils.windowsToForwardSlash(arg).replace(':', ';').replace('C;', 'C:')
+                }
+                return arg
+            }
+            assert expectedArgsCanonicalized == actualArgsCanonicalized
+
+            // WorkingDir
+            String actualWorkingDir =
+                    TestingUtils.windowsToForwardSlash(execSpec.getWorkingDir().absolutePath)
+            if (expectWorkingDir == null) {
+                expectWorkingDir = initWorkingDir
+            }
+            assert TestingUtils.windowsToForwardSlash(expectWorkingDir) == actualWorkingDir
 
             if (stdout) {
-                mockExec.standardOutput.write(stdout.getBytes('utf-8'))
-                mockExec.standardOutput.flush()
+                execSpec.getStandardOutput().write(stdout.getBytes('utf-8'))
+                execSpec.getStandardOutput().flush()
                 // warn is needed to output to stdout in unit tests
                 log.warn(stdout)
             }
             if (stderr) {
-                mockExec.errorOutput.write(stderr.getBytes('utf-8'))
-                mockExec.errorOutput.flush()
+                execSpec.getErrorOutput().write(stderr.getBytes('utf-8'))
+                execSpec.getErrorOutput().flush()
                 log.error(stderr)
             }
 
@@ -152,48 +329,10 @@ class MockProjectExec {
         }
     }
 
-    void verify() {
-        mockForProj.verify(proxyInstance)
-    }
-
-    // Basically mocks Gradle's AbstractExecTask
-    // TODO: implements ExecSpec
-    private class MockExec {
-        String workingDir
-        String executable
-        List<String> args = new ArrayList<>()
-        OutputStream errorOutput
-        OutputStream standardOutput
-
-        void executable(Object executable) {
-            this.executable = (String) executable
-        }
-
-        void args(Object... args) {
-            args.each { Object arg ->
-                String newArgStr = (String) arg
-                this.args.add(newArgStr)
-            }
-        }
-
-        List<String> getCommandLine() {
-            return args
-        }
-
-        void setStandardOutput(OutputStream standardOutput) {
-            this.standardOutput = standardOutput
-        }
-
-        void setErrorOutput(OutputStream errorOutput) {
-            this.errorOutput = errorOutput
-        }
-
-        void setWorkingDir(String workingDir) {
-            this.workingDir = workingDir
-        }
-
-        String toString() {
-            return "$executable ${args.join(' ')}"
+    void demandMkDirAndReturn(String expectedPath) {
+        mockForProj.demand.mkdir { Object path ->
+            assert expectedPath.equals(getAbsolutePathFromObject(path))
+            return project.file(path)
         }
     }
 }

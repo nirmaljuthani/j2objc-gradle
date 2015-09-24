@@ -1,157 +1,137 @@
-# j2objc-gradle
-Gradle Plugin for [J2ObjC](https://github.com/google/j2objc), which is an open-source tool
-from Google that translates Java source code to Objective-C for the iOS (iPhone/iPad) platform.
-The plugin is not affiliated with Google but was developed by former Google Engineers and others.
-J2ObjC enables Java source to be part of an iOS application's build, as no editing of the
-generated files is necessary. The goal is to write an app's non-UI code (such as application
-logic and data models) in Java, which is then shared by web apps (using GWT), Android apps,
-and iOS apps.
+# J2ObjC Gradle Plugin
 
+Gradle Plugin for [J2ObjC](https://github.com/google/j2objc),
+which is an open-source tool from Google that translates
+Java source code to Objective-C for the iOS (iPhone/iPad) platform. The plugin is
+not affiliated with Google but was developed by former Google Engineers and others.
+J2ObjC enables Java source to be part of an iOS application's build, no editing
+of the generated files is necessary. The goal is to write an app's non-UI code
+(such as application logic and data models) in Java, which is then shared by
+Android apps (natively Java), web apps (using GWT), and iOS apps (using J2ObjC).
+
+[![License](https://img.shields.io/badge/license-Apache%202.0%20License-blue.svg)](https://github.com/j2objc-contrib/j2objc-gradle/blob/master/LICENSE)
+[![OSX and Linux Build Status](https://img.shields.io/travis/j2objc-contrib/j2objc-gradle/master.svg?label=mac and linux build)](https://travis-ci.org/j2objc-contrib/j2objc-gradle)
+[![Windows Build Status](https://img.shields.io/appveyor/ci/madvayApiAccess/j2objc-gradle/master.svg?label=windows build)](https://ci.appveyor.com/project/madvayApiAccess/j2objc-gradle/branch/master)
+
+Home Page: https://github.com/j2objc-contrib/j2objc-gradle
 
 ### Usage
-At HEAD, this plugin is in a state of significant flux as we refactor it into a first-class
-Gradle plugin for our beta. You may wish to wait for the beta release as we may make backwards
-incompatible changes before that point.
 
-You should start with a clean java only project without any android dependencies. It suggested that
-this project is named `'shared'`. It must be buildable using Gradle's standard `'java'` plugin.
-It may start as an empty project and allows you to gradually shift over code from an existing
-Android application. See the section below on [Folder Structure](#folder-structure).
+You should start with a clean java only project without any Android dependencies.
+It is suggested that the project is named `shared`. It must be buildable using the standard
+[Gradle Java plugin](https://docs.gradle.org/current/userguide/java_plugin.html).
+Starting as an empty project allows you to gradually shift over code from an existing
+Android application. This is beneficial for separation between the application model
+and user interface. It also allows the shared project to be easily used server side as well.
 
-This is how to configure the build.gradle in your java only project. Please follow the link to
-find the latest version number of the plugin:
+The Android app, shared Java project and Xcode should be sibling directories, i.e children
+of the same root level folder. Suggested folder names are `'android', 'shared' and 'ios'`
+respectively. See the FAQ section on [recommended folder structure](FAQ.md#what-is-the-recommended-folder-structure-for-my-app).
 
-    // File: shared/build.gradle
-    plugins {
-        id 'java'
-        // Modify with latest version:
-        // https://plugins.gradle.org/plugin/com.github.j2objccontrib.j2objcgradle
-        id 'com.github.j2objccontrib.j2objcgradle' version 'X.Y.Z-alpha'
-    }
+Configure `shared/build.gradle` in your Java only project:
 
-    // Plugin settings:
-    j2objcConfig {
-        xcodeProjectDir "${projectDir}/../ios"   // Xcode workspace directory
-        xcodeTarget "IosApp"                     // Xcode application target name
-    
-        // Other Settings:
-        // https://github.com/j2objc-contrib/j2objc-gradle/blob/master/src/main/groovy/com/github/j2objccontrib/j2objcgradle/J2objcConfig.groovy#L25
-        
-        // You must include this call at the end of j2objcConfig, regardless of settings
-        finalConfigure()
-    }
+```gradle
+// File: shared/build.gradle
+plugins {
+    id 'java'
+    id 'com.github.j2objccontrib.j2objcgradle' version '0.4.2-alpha'
+}
 
-Within the Android application's project `build.gradle`, make it dependent on the `shared` project:
+// Plugin settings:
+j2objcConfig {
+    xcodeProjectDir '../ios'  // Xcode workspace directory (suggested directory name)
+    xcodeTarget 'IOS-APP'     // iOS app target name (replace with existing app name)
 
-    // File: android/build.gradle
-    dependencies {
-        compile project(':shared')
-    }
+    finalConfigure()          // Must be last call to configuration
+}
+```
 
-#### NOTE: Open `.xcworkspace` in Xcode
+Info on additional `j2objcConfig` settings are in
+[J2objcConfig.groovy](https://github.com/j2objc-contrib/j2objc-gradle/blob/master/src/main/groovy/com/github/j2objccontrib/j2objcgradle/J2objcConfig.groovy#L30).
+If your `shared` project depends on any other projects or third-party libraries, you may
+need to [add them manually](FAQ.md#how-do-i-setup-dependencies-with-j2objc) if they aren't
+[linked by default](FAQ.md#what-libraries-are-linked-by-default).
 
-When using the j2objcXcodeTask, open the `.xcworkspace` file in Xcode. If the `.xcodeproj` file
-is opened in Xcode then CocoaPods will fail. This will appear as an Xcode build time error:
+Within the Android application's `android/build.gradle`, make it dependent on the `shared` project:
 
-    library not found for -lPods-*-j2objc-shared
+```gradle
+// File: android/build.gradle
+dependencies {
+    compile project(':shared')
+}
+```
 
-### Folder Structure
+Note that the plugin is currently in alpha; we may need to make breaking API changes
+before the 1.0 release.
 
-This is the suggested folder structure. It also shows a number of generated files and
-folders that aren't committed to your repository. Files are shown before folder, so it
-is not in strict alphabetical order.
+### Minimum Requirements
 
-    workspace
-    ├── .gitignore                     // Should exclude: local.properties, settings.gradle, build/, ...
-    ├── build.gradle
-    ├── local.properties               // sdk.dir=<Android SDK> and j2objc.home=<J2ObjC>, .gitignore exclude
-    ├── settings.gradle                // include ':android', ':shared'
-    ├── android
-    │   ├── build.gradle               // dependencies { compile project(':shared') }
-    │   └── src/...                    // src/main/java/... and more, only Android specific code
-    ├── ios
-    │   ├── iosApp.xcworkspace         // Xcode workspace
-    │   ├── iosApp.xcodeproj           // Xcode project, which is modified by j2objcXcode / CocoaPods
-    │   ├── Podfile                    // j2objcXcode modifies this file for use by CocoaPods, committed
-    │   ├── iosApp/...                 // j2objcXcode configures dependency on j2objcOutputs/{libs|src}
-    │   ├── iosAppTests/...            // j2objcXcode configures as above but with "debug" buildType
-    │   └── Pods/...                   // generated by CocoaPods for Xcode, .gitignore exclude
-    └── shared
-        ├── build.gradle               // apply 'java' then 'j2objc' plugins
-        ├── build                      // generated build directory, .gitignore exclude
-        │   ├── ...                    // other build output
-        │   ├── binaries/...           // Contains test binary: testJ2objcExecutable/debug/testJ2objc
-        │   ├── j2objc-shared.podspec  // j2objcXcode generates these settings to modify Xcode
-        │   └── j2objcOutputs/...      // j2objcAssemble copies libraries and headers here
-        ├── lib                        // library dependencies, must have source code for translation
-        │   └── lib-with-src.jar       // library with source can be translated
-        └── src/...                    // src/main/java/... shared code for translation
+Gradle 2.4 is required for the compilation support within Gradle. The other necessities
+are the [J2objc Requirements](http://j2objc.org/#requirements).
+
+    * Gradle 2.4
+    * JDK 1.7 or higher
+    * Mac workstation or laptop
+    * Mac OS X 10.9 or higher
+    * Xcode 6 or higher
 
 
-### Tasks
+### J2ObjC Installation
 
-These are the main tasks for the plugin:
+Download the latest version from the [J2ObjC Releases](https://github.com/google/j2objc/releases).
+Find (or add) the local.properties in your root folder and add the path to the unzipped folder:
 
-    j2objcCycleFinder       - Find cycles that can cause memory leaks, see notes below
-    j2objcTranslate         - Translates to Objective-C
-    j2objcAssemble          - Builds debug/release libraries, packs targets in to fat libraries
-    j2objcTest              - Runs all JUnit tests, as translated into Objective-C
-    j2objcBuild             - Builds and tests all j2objc outputs.
-    j2objcXcode             - Configure Xcode to link to static library and header files
-
-Note that you can use the Gradle shorthand of `$ gradlew jA` to do the `j2objcAssemble` task.
-The other shorthand expressions are `jCF, jTr, jA, jTe, jB and jX`.
+```properties
+# File: local.properties
+j2objc.home=/J2OBJC_HOME
+```
 
 
-#### Task Enable and Disable
+### Build Commands
 
-You can disable tasks performed by the plugin using the following configuration block in your
-`build.gradle`. This is separate and alongside the j2objcConfig settings. For example, to
-disable the `j2objcTest` task, do the following:
+The plugin will output the generated source and libaries to the `build/j2objcOutputs`
+directory and run all tests. It is integrated with Gradle's Java build plugin and may
+be run as follows:
 
-    j2objcTest {
-        enabled = false
-    }
+    ./gradlew shared:build
 
-    j2objcConfig {
-        ...
-    }
+During development, to build the libraries and update Xcode (skipping the tests):
 
-If you are developing in a tight modify-compile-test loop and using only debug binaries, you
-may want to disable the release build temporarily by adding to your `local.properties` file:
+    ./gradlew shared:j2objcXcode
 
-    j2objc.releaseEnabled=false
+For a complete build, run both:
 
-This should cut the j2objc build time up to 50%.  You can also do this for `j2objc.debugEnabled`.
+    ./gradlew shared:build shared:j2objcXcode
 
-#### j2objcCycleFinder
+### Problems
 
-This task is disabled by default as it requires greater sophistication to use. It runs the
-`cycle_finder` tool in the J2ObjC release to detect memory cycles in your application.
-Objects that are part of a memory cycle on iOS won't be deleted as it doesn't support
-garbage collection.
+Having issues with the plugin?
+Please first check the [Frequently Asked Questions](FAQ.md).
+Next, search the [Issues](https://github.com/j2objc-contrib/j2objc-gradle/issues) for a similar
+problem.  If your issue is not addressed, please file a new Issue, including the following
+details (if you are comfortable sharing publicly as "Contribution(s)" per
+the [LICENSE](LICENSE)):
+- build.gradle file(s)
+- contents of Gradle build errors if any
+- version of J2ObjC you have installed
 
-The basic setup will implicitly check for 40 memory cycles - this is the expected number
-of erroneous matches with `jre_emul` library for j2objc version 0.9.6.1. This may cause
-issues if this number changes with future versions of j2objc libraries.
+If you are not comfortable sharing these, the community may not be able to help as much.
 
-    j2objcCycleFinder {
-        enabled = true
-    }
-
-Also see FAQ's [Advanced Cycle Finder Setup](FAQ.md#Advanced-Cycle-Finder-Setup).
-
-
-### Contributing
-See [CONTRIBUTING.md](CONTRIBUTING.md#quick-start).
-
+Mozilla's [Bug writing guidelines](https://developer.mozilla.org/en-US/docs/Mozilla/QA/Bug_writing_guidelines)
+may be helpful. Having public, focused, and actionable Issues
+helps the maximum number of users and also lets the maximum number of people help you.
+Please do not email the authors directly.
 
 ### FAQ
 
-See [FAQ.md](FAQ.md).
+Please see [FAQ.md](FAQ.md).
+
+
+### Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md#quick-start).
 
 
 ### License
 
-This library is distributed under the Apache 2.0 license found in the
-[LICENSE](./LICENSE) file.
+This library is distributed under the Apache 2.0 license found in the [LICENSE](./LICENSE) file.

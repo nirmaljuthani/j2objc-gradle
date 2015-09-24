@@ -13,11 +13,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 // Based on https://plugins.gradle.org/docs/publish-plugin
 
 plugins {
     id "com.gradle.plugin-publish" version "0.9.0"
+    // Outputs a BuildInfo.java file with information about the git repo;
+    // also fails plugin publishing if your git working directory is unclean.
+    // Note this only enforces that the code you are publishing is committed
+    // to your local repo; you have to make sure to push it upstream.
+    id "com.madvay.tools.build.gitbuildinfo" version "0.1.2-alpha"
 }
 apply plugin: 'groovy'
 
@@ -32,18 +36,31 @@ task wrapper(type: Wrapper) {
 }
 
 group = 'com.github.j2objccontrib.j2objcgradle'
-version = '0.3.0-alpha'
+
+// A suffix of -SNAPSHOT means this is not an official release of the
+// system, but built from an intermediate source tree.  See
+// CONTRIBUTING.md on how to update this version number.
+version = '0.4.3-alpha-SNAPSHOT'
+
+test {
+    testLogging {
+        // Provide full exception info on failure, instead
+        // of just pointing to an HTML file.
+        exceptionFormat = 'full'
+    }
+}
 
 pluginBundle {
     website = 'https://www.github.com/j2objc-contrib/j2objc-gradle/'
     vcsUrl = 'https://github.com/j2objc-contrib/j2objc-gradle'
-    description = 'Gradle Plugin for J2ObjC, which is an open-source tool from Google that translates ' +
-                  'Java source code to Objective-C for the iOS (iPhone/iPad) platform. The plugin is ' +
-                  'not affiliated with Google but was developed by former Google Engineers and others. ' +
-                  'J2ObjC enables Java source to be part of an iOS application\'s build, as no editing ' +
-                  'of the generated files is necessary. The goal is to write an app\'s non-UI code ' +
-                  '(such as application logic and data models) in Java, which is then shared by web ' +
-                  'apps (using GWT), Android apps, and iOS apps.'
+    description =
+            "Gradle Plugin for J2ObjC, which is an open-source tool from Google that translates " +
+            "Java source code to Objective-C for the iOS (iPhone/iPad) platform. The plugin is " +
+            "not affiliated with Google but was developed by former Google Engineers and others. " +
+            "J2ObjC enables Java source to be part of an iOS application's build, no editing " +
+            "of the generated files is necessary. The goal is to write an app's non-UI code " +
+            "(such as application logic and data models) in Java, which is then shared by " +
+            "Android apps, web apps (using GWT), and iOS apps (using J2ObjC)."
     tags = ['android', 'java', 'j2objc', 'ios', 'iphone', 'objective-c', 'xcode']
 
     plugins {
@@ -52,4 +69,15 @@ pluginBundle {
             displayName = 'J2ObjC Gradle Plugin'
         }
     }
+}
+
+project.tasks.all {
+    if (it.name == 'publishPluginGroovyDocsJar' || it.name == 'publishPluginJavaDocsJar') {
+        it.from(project.file('src/main/resources/'))
+    }
+}
+
+buildStamp {
+    repoBaseUrl "https://github.com/j2objc-contrib/j2objc-gradle/tree/"
+    packageName "com.github.j2objccontrib.j2objcgradle"
 }
