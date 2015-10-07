@@ -34,13 +34,13 @@ Configure `shared/build.gradle` in your Java only project:
 // File: shared/build.gradle
 plugins {
     id 'java'
-    id 'com.github.j2objccontrib.j2objcgradle' version '0.4.2-alpha'
+    id 'com.github.j2objccontrib.j2objcgradle' version '0.4.3-alpha'
 }
 
 // Plugin settings:
 j2objcConfig {
-    xcodeProjectDir '../ios'  // Xcode workspace directory (suggested directory name)
-    xcodeTarget 'IOS-APP'     // iOS app target name (replace with existing app name)
+    // Xcode workspace directory (suggested directory name)
+    xcodeProjectDir '../ios'
 
     finalConfigure()          // Must be last call to configuration
 }
@@ -48,6 +48,8 @@ j2objcConfig {
 
 Info on additional `j2objcConfig` settings are in
 [J2objcConfig.groovy](https://github.com/j2objc-contrib/j2objc-gradle/blob/master/src/main/groovy/com/github/j2objccontrib/j2objcgradle/J2objcConfig.groovy#L30).
+The default will link the transpiled code in to all of your Xcode build targets. To specify
+a subset, add a line for `xcodeTargets 'IOS-APP', 'IOS-APP-TESTS', 'WATCHKIT-APP', ...`.
 If your `shared` project depends on any other projects or third-party libraries, you may
 need to [add them manually](FAQ.md#how-do-i-setup-dependencies-with-j2objc) if they aren't
 [linked by default](FAQ.md#what-libraries-are-linked-by-default).
@@ -73,7 +75,8 @@ are the [J2objc Requirements](http://j2objc.org/#requirements).
     * JDK 1.7 or higher
     * Mac workstation or laptop
     * Mac OS X 10.9 or higher
-    * Xcode 6 or higher
+    * Xcode 7 or higher
+    * j2objc 0.9.8.2.1 or higher
 
 
 ### J2ObjC Installation
@@ -121,6 +124,7 @@ Mozilla's [Bug writing guidelines](https://developer.mozilla.org/en-US/docs/Mozi
 may be helpful. Having public, focused, and actionable Issues
 helps the maximum number of users and also lets the maximum number of people help you.
 Please do not email the authors directly.
+
 
 ### FAQ
 
