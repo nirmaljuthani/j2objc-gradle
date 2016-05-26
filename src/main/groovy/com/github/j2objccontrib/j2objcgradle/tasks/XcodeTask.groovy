@@ -247,6 +247,7 @@ class XcodeTask extends DefaultTask {
                "  spec.public_header_files = '$publicHeadersDir/**/*.h'\n" +
                "  spec.resources = '$resourceDir/**/*'\n" +
                "  spec.requires_arc = true\n" +
+	       "  spec.header_mappings_dir = '$publicHeadersDir'\n" +
                // Avoid CocoaPods deleting files that don't match "*.h" in public_header_files
                "  spec.preserve_paths = '$publicHeadersDir/**/*'\n" +
                "  spec.libraries = " +  // continuation of same line
